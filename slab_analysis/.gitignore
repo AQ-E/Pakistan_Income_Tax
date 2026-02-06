@@ -1,0 +1,6 @@
+__pycache__/
+.streamlit/
+*.pyc
+.DS_Store
+*.xlsx
+!Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx

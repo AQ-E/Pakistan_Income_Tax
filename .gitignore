@@ -1,0 +1,12 @@
+# User-specific files
+__pycache__/
+.streamlit/
+*.pyc
+.DS_Store
+
+# Keep everything else in the subfolders
+!pit_microsimulation/
+!slab_analysis/
+!README.md
+!requirements.txt
+!.gitignore
