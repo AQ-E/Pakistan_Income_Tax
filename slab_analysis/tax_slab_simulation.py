@@ -41,7 +41,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-FILE_PATH = "Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx"
+FILE_PATH = "slab_analysis/Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx"
 
 # --- Data Loading ---
 @st.cache_data
@@ -558,3 +558,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
