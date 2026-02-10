@@ -41,7 +41,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-FILE_PATH = os.path.join(os.path.dirname(__file__), "Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx")
+FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx")
 
 # --- Data Loading ---
 @st.cache_data
