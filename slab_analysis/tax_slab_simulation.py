@@ -41,7 +41,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-FILE_PATH = "slab_analysis/Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx"
+FILE_PATH = os.path.join(os.path.dirname(__file__), "Slab wise Taxable Income Filers & Normal Tax_3012026.xlsx")
 
 # --- Data Loading ---
 @st.cache_data
@@ -86,6 +86,11 @@ def process_data(df_input):
         if c in df.columns:
             df[c] = df[c].fillna(0)
             
+    # User requested: only using normal income tax keep others zero
+    if 'normal_tax_920000' in df.columns:
+        df['net_tax_9200'] = df['normal_tax_920000']
+        df['admitted_tax_9203'] = 0
+            
     # Clean bounds
     if 'lower_bound' in df.columns:
         df['lower_bound'] = pd.to_numeric(df['lower_bound'], errors='coerce').fillna(0)
@@ -99,17 +104,16 @@ def process_data(df_input):
 
     # Derived Metrics
     df['avg_taxable_income_per_filer'] = df['taxable_income_9100'] / df['total_filers'].replace(0, np.nan)
-    df['net_tax_per_filer'] = df['net_tax_9200'] / df['total_filers'].replace(0, np.nan)
+    df['normal_tax_per_filer'] = df['normal_tax_920000'] / df['total_filers'].replace(0, np.nan)
     
-    df['etr_net'] = df['net_tax_9200'] / df['taxable_income_9100'].replace(0, np.nan)
     df['etr_normal'] = df['normal_tax_920000'] / df['taxable_income_9100'].replace(0, np.nan)
     
     # Revenue Shares
     group_cols = ['year', 'taxpayer_type']
     if set(group_cols).issubset(df.columns):
-        totals = df.groupby(group_cols)[['taxable_income_9100', 'net_tax_9200']].transform('sum')
+        totals = df.groupby(group_cols)[['taxable_income_9100', 'normal_tax_920000']].transform('sum')
         df['tax_base_share'] = (df['taxable_income_9100'] / totals['taxable_income_9100']).fillna(0)
-        df['revenue_share'] = (df['net_tax_9200'] / totals['net_tax_9200']).fillna(0)
+        df['revenue_share'] = (df['normal_tax_920000'] / totals['normal_tax_920000']).fillna(0)
     
     # Create Short Labels
     def make_short_label(row):
@@ -300,24 +304,24 @@ def main():
         # Metrics
         total_filers = df_dash['total_filers'].sum()
         total_income_bn = df_dash['taxable_income_9100'].sum() / 1e9
-        net_tax_bn = df_dash['net_tax_9200'].sum() / 1e9
-        avg_etr = (df_dash['net_tax_9200'].sum() / df_dash['taxable_income_9100'].sum()) * 100 if df_dash['taxable_income_9100'].sum() > 0 else 0
+        normal_tax_bn = df_dash['normal_tax_920000'].sum() / 1e9
+        avg_etr = (df_dash['normal_tax_920000'].sum() / df_dash['taxable_income_9100'].sum()) * 100 if df_dash['taxable_income_9100'].sum() > 0 else 0
         
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Total Filers", f"{total_filers:,.0f}")
         m2.metric("Total Income (PKR bn)", f"{total_income_bn:,.1f}")
-        m3.metric("Net Tax (PKR bn)", f"{net_tax_bn:,.1f}")
-        m4.metric("Avg ETR (Net)", f"{avg_etr:.1f}%")
+        m3.metric("Normal Tax (PKR bn)", f"{normal_tax_bn:,.1f}")
+        m4.metric("Avg ETR (Normal)", f"{avg_etr:.1f}%")
         
         st.divider()
 
         def render_charts(data, title_prefix):
             c1, c2 = st.columns(2)
             with c1:
-                st.subheader("Revenue Share")
-                total_rev = data['net_tax_9200'].sum()
+                st.subheader("Normal Tax Revenue Share")
+                total_rev = data['normal_tax_920000'].sum()
                 data_chart = data.copy()
-                data_chart['local_share'] = (data_chart['net_tax_9200'] / total_rev) * 100 if total_rev > 0 else 0
+                data_chart['local_share'] = (data_chart['normal_tax_920000'] / total_rev) * 100 if total_rev > 0 else 0
                 
                 fig_bar = px.bar(
                     data_chart, x='slab_id', y='local_share',
@@ -328,8 +332,8 @@ def main():
                 st.plotly_chart(fig_bar, use_container_width=True)
             
             with c2:
-                st.subheader("Effective Tax Rate (%)")
-                data_chart['etr_pct'] = data_chart['etr_net'] * 100
+                st.subheader("Effective Normal Tax Rate (%)")
+                data_chart['etr_pct'] = data_chart['etr_normal'] * 100
                 fig_line = px.line(
                     data_chart, x='slab_id', y='etr_pct',
                     labels={'etr_pct': 'ETR %', 'slab_id': 'Slab ID'},
@@ -354,15 +358,15 @@ def main():
         st.subheader("Salaried vs Non-Salaried Comparison")
         comp_year = st.selectbox("Select Year", years, key="comp_year")
         comp_df = df[df['year'] == comp_year].copy()
-        agg_comp = comp_df.groupby('taxpayer_type')[['total_filers', 'taxable_income_9100', 'net_tax_9200']].sum().reset_index()
-        agg_comp['etr'] = (agg_comp['net_tax_9200'] / agg_comp['taxable_income_9100']) * 100
+        agg_comp = comp_df.groupby('taxpayer_type')[['total_filers', 'taxable_income_9100', 'normal_tax_920000']].sum().reset_index()
+        agg_comp['etr'] = (agg_comp['normal_tax_920000'] / agg_comp['taxable_income_9100']) * 100
         
         c1, c2 = st.columns(2)
         with c1:
-            fig_tax = px.pie(agg_comp, values='net_tax_9200', names='taxpayer_type', title=f"Net Tax Contribution", hole=0.4)
+            fig_tax = px.pie(agg_comp, values='normal_tax_920000', names='taxpayer_type', title=f"Normal Tax Contribution", hole=0.4)
             st.plotly_chart(fig_tax, use_container_width=True)
         with c2:
-            fig_etr = px.bar(agg_comp, x='taxpayer_type', y='etr', color='taxpayer_type', title=f"Average ETR", text_auto='.1f')
+            fig_etr = px.bar(agg_comp, x='taxpayer_type', y='etr', color='taxpayer_type', title=f"Average Normal ETR", text_auto='.1f')
             st.plotly_chart(fig_etr, use_container_width=True)
 
     # --- TAB 3: SIMULATOR ---
@@ -490,12 +494,12 @@ def main():
                 
                 col_res1, col_res2, col_res3 = st.columns(3)
                 
-                col_res1.metric("Baseline Revenue", f"{base_rev:,.2f} B")
+                col_res1.metric("Baseline Normal Tax", f"{base_rev:,.2f} B")
                 
                 col_res2.metric(
                     "Method 1: Schedule Shift", 
                     f"{m1_final_rev:,.2f} B", 
-                    delta=f"{m1_delta_adj:+.2f} B (Full)",
+                    delta=f"{m1_delta_adj:+.2f} B",
                     delta_color="normal"
                 )
                 
@@ -527,7 +531,7 @@ def main():
                 
                 fig_comp = px.bar(
                     df_melt, x='slab_id', y='Delta Revenue', color='Method',
-                    title="Revenue Impact by Slab (PKR)",
+                    title="Normal Tax Revenue Impact by Slab (PKR)",
                     barmode='group',
                     hover_data=['short_label']
                 )
@@ -538,13 +542,14 @@ def main():
                 
                 # Merge for formatted display
                 final_table = res_m1[['slab_id', 'total_filers', 'avg_taxable_income_per_filer', 'sim_revenue_base']].copy()
+                final_table = final_table.rename(columns={'sim_revenue_base': 'baseline_normal_tax'})
                 final_table['M1_Delta'] = res_m1['delta_revenue_adj']
                 final_table['M2_Delta'] = res_m2['delta_revenue_m2_adj']
                 
                 st.dataframe(final_table.style.format({
                     'total_filers': '{:,.0f}',
                     'avg_taxable_income_per_filer': '{:,.0f}',
-                    'sim_revenue_base': '{:,.0f}',
+                    'baseline_normal_tax': '{:,.0f}',
                     'M1_Delta': '{:,.0f}',
                     'M2_Delta': '{:,.0f}'
                 }))
@@ -552,8 +557,12 @@ def main():
 
     # --- TAB 4: DATA ---
     with tab_data:
-        st.dataframe(df)
-        csv = df.to_csv(index=False).encode('utf-8')
+        # User requested to remove specific columns from this view
+        cols_to_hide = ['taxable_income_9100', 'admitted_tax_9203', 'net_tax_9200']
+        df_display = df.drop(columns=[c for c in cols_to_hide if c in df.columns])
+        
+        st.dataframe(df_display)
+        csv = df_display.to_csv(index=False).encode('utf-8')
         st.download_button("Download CSV", csv, "tax_data_export.csv", "text/csv")
 
 if __name__ == "__main__":
