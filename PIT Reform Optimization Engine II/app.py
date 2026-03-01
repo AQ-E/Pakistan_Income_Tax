@@ -12,7 +12,11 @@ import importlib
 
 # Force reload of core logic
 import src.solver
+import src.io
+import src.viz
 importlib.reload(src.solver)
+importlib.reload(src.io)
+importlib.reload(src.viz)
 
 from src.io import load_slab_data, load_grid_data, get_data_paths
 from src.solver import (optimize_schedule, compute_metrics, _schedule_to_list,
@@ -72,8 +76,8 @@ def _fmt_table(df):
         return f"{lo} – {hi}"
     
     out['Income Range'] = out.apply(_rng, axis=1)
-    out['Marginal Rate'] = out['marginal_rate'].map('{:.2%}'.format)
-    return out[['Income Range', 'Marginal Rate']]
+    out['MTR'] = out['marginal_rate'].map('{:.2%}'.format)
+    return out[['Income Range', 'MTR']]
 
 def _merged_table(base_df, prop_df):
     all_b = sorted(set(
@@ -92,8 +96,8 @@ def _merged_table(base_df, prop_df):
         hi_s = "Above" if not np.isfinite(hi) else f"{hi:,.0f}"
         rows.append({
             'Band': f"{lo:,.0f} – {hi_s}",
-            'Base Rate': f"{br:.2%}" if br is not None else "—",
-            'Proposed Rate': f"{pr:.2%}" if pr is not None else "—",
+            'Base MTR': f"{br:.2%}" if br is not None else "—",
+            'Proposed MTR': f"{pr:.2%}" if pr is not None else "—",
             'Δ (pp)': f"{(pr-br)*100:+.2f}" if br is not None and pr is not None else "—",
         })
     return pd.DataFrame(rows)
@@ -103,8 +107,7 @@ def _get_historical_data(grid_df, g_type, target_y):
     subset = grid_df[grid_df['Type_Tax'] == t_norm].sort_values('Annual Income')
     if subset.empty: return {}, {}
     etr_out, detr_out = {}, {}
-    years = [('2018', 'ETR_FY18'), ('2019', 'ETR_FY19'), 
-             ('2023', 'ETR_FY23'), ('2024', 'ETR_FY24')]
+    years = [('2025', 'ETR_FY25')]
     for label, col in years:
         if col in subset.columns:
             h_etr = np.interp(target_y, subset['Annual Income'], subset[col])
@@ -124,12 +127,14 @@ with st.sidebar:
     selected_year = st.selectbox("Baseline Year", years_avail)
 
     st.markdown("### Targets")
-    uplift_target = st.slider("Revenue Target Uplift (%)", 0.0, 15.0, 0.0, 0.5)
+    uplift_target = st.slider("Change in Revenue (%)", 0.0, 15.0, 0.0, 0.5)
 
     if mode == "Auto Optimize":
         st.markdown("### Scope")
         run_sal = st.checkbox("Optimize Salaried", value=True)
         run_nsal = st.checkbox("Optimize Non-Salaried", value=True)
+        run_aop = st.checkbox("Optimize AOP", value=True)
+        run_cons = st.checkbox("Optimize Consolidated", value=False)
         
         if st.button("🚀 Auto-Optimize Policy", type="primary"):
             st.session_state.results = {}
@@ -137,6 +142,8 @@ with st.sidebar:
             groups = []
             if run_sal: groups.append('Salaried')
             if run_nsal: groups.append('Non-Salaried')
+            if run_aop: groups.append('AOP')
+            if run_cons: groups.append('Consolidated')
 
             for g_type in groups:
                 df_slabs_agg['_norm'] = df_slabs_agg['taxpayer_type'].apply(_norm)
@@ -156,7 +163,7 @@ with st.sidebar:
 
     else: # Policy Lab
         st.markdown("### Policy Lab Setup")
-        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried"])
+        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "Consolidated"])
         
         # Track active lab type to handle switching
         if 'lab_type_active' not in st.session_state:
@@ -196,7 +203,7 @@ if mode == "Policy Lab":
         column_config={
             "lower_bound": st.column_config.NumberColumn("Lower Bound (PKR)", format="%d", min_value=0),
             "upper_bound": st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
-            "marginal_rate": st.column_config.NumberColumn("Tax Rate", format="%.2f", min_value=0.0, max_value=1.0)
+            "marginal_rate": st.column_config.NumberColumn("MTR", format="%.2f", min_value=0.0, max_value=1.0)
         }
     )
     
@@ -264,11 +271,18 @@ else:
             t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
             with t_ana:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("Base Rev", f"PKR {base_rev/1e9:,.1f}B")
-                c2.metric("Prop Rev", f"PKR {rev/1e9:,.1f}B", f"{uplift:+.2%}")
-                c3.metric("Top 1% Tax Share", f"{m.get('top_1pct_share', 0):.1%}")
-                c4.metric("Avg Effective Rate", f"{m.get('avg_etr', 0):.2%}")
+                c1, c2, c3, c4, c5 = st.columns(5)
+                c1.metric("Base Normal Income Tax", f"PKR {base_rev/1e9:,.1f}B")
+                c2.metric("Prop Normal Income Tax", f"PKR {rev/1e9:,.1f}B", f"{uplift:+.2%}")
+                
+                total_filers = m.get('total_filers', res['agg_df']['total_filers'].sum())
+                c3.metric("Number of filers", f"{int(total_filers):,}")
+                
+                c4.metric("Avg ETR", f"{m.get('avg_etr', 0):.2%}")
+                
+                max_mtr = max([s['rate'] for s in res['schedule_list']])
+                max_cetr = m.get('band_max_jump', 0)
+                c5.metric("MTR (Max) / CETR (Max)", f"{max_mtr:.2%} / {max_cetr:.2f}pp")
 
                 st.markdown("---")
                 y_grid = m['y']
