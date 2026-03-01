@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.streamlit/
+.env
+venv/
+.ipynb_checkpoints/
+*.DS_Store
