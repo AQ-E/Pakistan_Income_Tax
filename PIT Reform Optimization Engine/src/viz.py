@@ -165,7 +165,7 @@ def plot_etr_heatmap(df, zmax=0.40, colorscale='Viridis'):
 
 def plot_detr_heatmap(df, spike_threshold=None, colorscale='Inferno'):
     """
-    Policy-grade ΔETR heatmap with spike highlighting.
+    Policy-grade CETR heatmap with spike highlighting.
 
     Parameters
     ----------
@@ -194,7 +194,7 @@ def plot_detr_heatmap(df, spike_threshold=None, colorscale='Inferno'):
     for i, y_label in enumerate(df.index):
         row = []
         for j, col in enumerate(df.columns):
-            row.append(f"Income: {y_label}<br>{col} ΔETR: {df.iloc[i, j]:.3f} pp")
+            row.append(f"Income: {y_label}<br>{col} CETR: {df.iloc[i, j]:.3f} pp")
         hover.append(row)
 
     # Build annotation text — ONLY for spike cells
@@ -217,7 +217,7 @@ def plot_detr_heatmap(df, spike_threshold=None, colorscale='Inferno'):
         zmax=p99,
         colorscale=colorscale,
         colorbar=dict(
-            title=dict(text='ΔETR (pp)', font=dict(size=14)),
+            title=dict(text='CETR (pp)', font=dict(size=14)),
             tickfont=dict(size=12),
             len=0.85,
         ),
@@ -243,7 +243,7 @@ def plot_detr_heatmap(df, spike_threshold=None, colorscale='Inferno'):
 
     fig.update_layout(
         title=dict(
-            text='ETR Change (ΔETR) — Smoothness Diagnostic',
+            text='CETR (Change in ETR) — Smoothness Diagnostic',
             font=dict(size=20, color='#1a1a2e'),
         ),
         xaxis=dict(
@@ -317,7 +317,7 @@ def plot_etr_curve(metrics_final, metrics_base=None, historical_benchmarks=None,
 # 7.  Revenue Contribution Chart
 # ─────────────────────────────────────────────────────────
 
-def plot_revenue_contribution(agg_df, schedule_list, title="Revenue Contribution by Income Group"):
+def plot_revenue_contribution(agg_df, schedule_list, title="Normal Income Tax Contribution by Income Group"):
     """
     Shows which income groups are paying how much in total PKR.
     """
@@ -332,14 +332,14 @@ def plot_revenue_contribution(agg_df, schedule_list, title="Revenue Contribution
             rev = t * n
             rows.append({
                 'Slab': row.get('slab_id', 'N/A'),
-                'Revenue (Billion PKR)': rev / 1e9,
+                'Normal Income Tax (Billion PKR)': rev / 1e9,
                 'Income Range': f"{row['lower_bound']/1e6:.1f}M - {row.get('upper_bound', np.inf)/1e6:.1f}M"
             })
     
     df_plot = pd.DataFrame(rows)
-    fig = px.bar(df_plot, x='Slab', y='Revenue (Billion PKR)', 
+    fig = px.bar(df_plot, x='Slab', y='Normal Income Tax (Billion PKR)', 
                  hover_data=['Income Range'],
-                 color='Revenue (Billion PKR)',
+                 color='Normal Income Tax (Billion PKR)',
                  color_continuous_scale='Blues',
                  title=title)
     
@@ -351,7 +351,7 @@ def plot_revenue_contribution(agg_df, schedule_list, title="Revenue Contribution
 # 8.  Marginal vs Effective Staircase
 # ─────────────────────────────────────────────────────────
 
-def plot_staircase_rates(metrics, schedule_list, title="Marginal vs Effective Tax Rates"):
+def plot_staircase_rates(metrics, schedule_list, title="MTR vs ETR Staircase"):
     """
     Step chart for Marginal rates vs line chart for Effective rates.
     """
@@ -365,11 +365,11 @@ def plot_staircase_rates(metrics, schedule_list, title="Marginal vs Effective Ta
     fig = go.Figure()
     
     # Effective Rate
-    fig.add_trace(go.Scatter(x=y_grid, y=etr, name='Effective Rate (ETR)',
+    fig.add_trace(go.Scatter(x=y_grid, y=etr, name='ETR',
                              line=dict(color='#2a9d8f', width=3)))
     
     # Marginal Rate (Step)
-    fig.add_trace(go.Scatter(x=lowers, y=rates, name='Marginal Rate',
+    fig.add_trace(go.Scatter(x=lowers, y=rates, name='MTR',
                              line=dict(color='#e76f51', width=2),
                              line_shape='hv'))
     
@@ -420,7 +420,7 @@ def plot_progressivity_slope(metrics, base_metrics=None, title="Progressivity An
     fig.update_layout(
         title=title,
         xaxis_title="Annual Income (PKR)",
-        yaxis_title="Change in ETR (pp per step)",
+        yaxis_title="CETR (pp per step)",
         template="plotly_white",
         height=450,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
