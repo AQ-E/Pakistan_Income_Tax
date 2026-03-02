@@ -118,8 +118,8 @@ def _get_historical_data(grid_df, g_type, target_y):
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
     st.header("⚙️ Design Mode")
-    mode = st.radio("Optimization Strategy", ["Auto Optimize", "Policy Lab"], 
-                    help="Auto: System finds the best schedule. Lab: You design it.")
+    mode = st.radio("Optimization Strategy", ["Custom Dataset Simulator", "Auto Optimize", "Policy Lab"], 
+                    help="Simulator: Upload and estimate. Auto: System finds best schedule. Lab: You design it.")
 
     st.markdown("---")
     st.header("📋 General Settings")
@@ -192,7 +192,155 @@ with st.sidebar:
         st.info("💡 **Policy Lab Guide**:\n- **Double-click** a cell to edit.\n- **Add Slabs**: Click the '+' at the bottom.\n- **Remove Slabs**: Select a row and press Delete.\n- **Final Slab**: Leave Upper Bound empty or put a large number; the engine will treat it as 'Above'.")
 
 # ───────────────────────── Main Dashboard ─────────────────────────
-if mode == "Policy Lab":
+if mode == "Custom Dataset Simulator":
+    st.header("📂 Custom Dataset Simulator")
+    st.markdown("Upload your dataset to apply dynamic slab routing and surcharge rules.")
+    
+    uploaded_file = st.file_uploader("Upload Excel Dataset", type=["xlsx", "xls"])
+    
+    if uploaded_file is not None:
+        try:
+            df_upload = pd.read_excel(uploaded_file)
+            req_cols = ["Taxable Income Slab (Rs.)", "Year", "Type_Tax", "Number of Persons", "Taxable Income (9100)", "Normal Income Tax (920000)"]
+            missing = [c for c in req_cols if c not in df_upload.columns]
+            if missing:
+                st.error(f"❌ Missing required columns: {', '.join(missing)}")
+            else:
+                st.success("✅ File uploaded and validated successfully!")
+                
+                # Surcharge Parameters UI
+                st.markdown("### ⚙️ Surcharge & Slab Settings")
+                
+                tax_types = ['Salaried', 'Non-Salaried', 'AOP']
+                upload_types = df_upload['Type_Tax'].dropna().unique()
+                for ut in upload_types:
+                    if ut not in tax_types:
+                        tax_types.append(ut)
+                
+                tabs = st.tabs(tax_types)
+                
+                schedules_dict = {}
+                surcharges_dict = {}
+                
+                df_slabs_agg['_norm'] = df_slabs_agg['taxpayer_type'].apply(_norm)
+                
+                for i, ttype in enumerate(tax_types):
+                    with tabs[i]:
+                        c1, c2 = st.columns(2)
+                        with c1:
+                            sur_thresh = st.number_input("Surcharge Threshold (PKR)", min_value=0.0, value=0.0, step=100000.0, key=f"sur_thresh_{ttype}")
+                        with c2:
+                            sur_rate = st.number_input("Surcharge Rate (%)", min_value=0.0, value=0.0, step=0.5, key=f"sur_rate_{ttype}")
+                        surcharges_dict[ttype] = {'threshold': sur_thresh, 'rate': sur_rate / 100.0}
+                        
+                        g_agg = df_slabs_agg[(df_slabs_agg['year'] == selected_year) & (df_slabs_agg['_norm'] == _norm(ttype))].copy()
+                        if not g_agg.empty:
+                            base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
+                            if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
+                        else:
+                            base_slabs_raw = pd.DataFrame({'lower_bound': [0], 'upper_bound': [np.inf], 'marginal_rate': [0.0]})
+                            
+                        st_key = f"sim_slabs_{ttype}"
+                        if st_key not in st.session_state:
+                            st.session_state[st_key] = base_slabs_raw.reset_index(drop=True)
+                            
+                        edited_df = st.data_editor(
+                            st.session_state[st_key],
+                            key=f"editor_{ttype}",
+                            num_rows="dynamic",
+                            use_container_width=True,
+                            column_config={
+                                "lower_bound": st.column_config.NumberColumn("Lower Bound (PKR)", format="%d", min_value=0),
+                                "upper_bound": st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
+                                "marginal_rate": st.column_config.NumberColumn("MTR", format="%.2f", min_value=0.0, max_value=1.0)
+                            }
+                        )
+                        
+                        if not edited_df.empty:
+                            edited_df = edited_df.sort_values('lower_bound').reset_index(drop=True)
+                            last_idx = edited_df.index[-1]
+                            val = edited_df.loc[last_idx, 'upper_bound']
+                            if pd.isna(val) or val > 500_000_000 or val <= edited_df.loc[last_idx, 'lower_bound']:
+                                edited_df.loc[last_idx, 'upper_bound'] = np.inf
+                            for j in range(1, len(edited_df)):
+                                edited_df.loc[j-1, 'upper_bound'] = edited_df.loc[j, 'lower_bound']
+                                
+                        st.session_state[st_key] = edited_df
+                        schedules_dict[ttype] = _schedule_to_list(edited_df)
+                        
+                # Compute Engine
+                out_dfs = []
+                for (year, g_ttype), group in df_upload.groupby(['Year', 'Type_Tax']):
+                    group = group.sort_values('Taxable Income (9100)').copy()
+                    
+                    sch = None
+                    sur_thresh, sur_rate = 0.0, 0.0
+                    
+                    ttype_norm = _norm(g_ttype)
+                    for k in tax_types:
+                        if _norm(k) == ttype_norm:
+                            sch = schedules_dict[k]
+                            sur_thresh = surcharges_dict[k]['threshold']
+                            sur_rate = surcharges_dict[k]['rate']
+                            break
+                            
+                    if not sch:
+                        out_dfs.append(group)
+                        continue
+                        
+                    y = group['Taxable Income (9100)'].values.astype(float)
+                    
+                    lowers = np.array([s['lower'] for s in sch])
+                    rates = np.array([s['rate'] for s in sch])
+                    uppers = np.array([s['upper'] for s in sch])
+                    
+                    base_cum = np.zeros(len(sch))
+                    for k in range(1, len(sch)):
+                        width = uppers[k-1] - lowers[k-1]
+                        w = np.where(np.isinf(width), 0, width)
+                        base_cum[k] = base_cum[k-1] + w * rates[k-1]
+                        
+                    idx = np.searchsorted(lowers, y, side='right') - 1
+                    idx = np.clip(idx, 0, len(sch) - 1)
+                    mtr = rates[idx]
+                    
+                    base_tax = base_cum[idx] + (y - lowers[idx]) * mtr
+                    base_tax = np.maximum(base_tax, 0.0)
+                    
+                    nit_est = np.where(y >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
+                    
+                    etr = np.zeros_like(y)
+                    mask = y > 0
+                    etr[mask] = nit_est[mask] / y[mask]
+                    
+                    detr = np.zeros_like(etr)
+                    detr[1:] = etr[1:] - etr[:-1]
+                    
+                    group['MTR'] = mtr
+                    group['BaseTax'] = base_tax
+                    group['NIT Estimated'] = nit_est
+                    group['ETR'] = etr
+                    group['ΔETR'] = detr
+                    
+                    out_dfs.append(group)
+                    
+                if out_dfs:
+                    final_df = pd.concat(out_dfs, ignore_index=True)
+                    st.markdown("### 📊 Processed Dataset Output")
+                    st.dataframe(final_df)
+                    
+                    output = io.BytesIO()
+                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                        final_df.to_excel(writer, index=False)
+                    st.download_button(label="📥 Download Simulated Dataset",
+                                       data=output.getvalue(),
+                                       file_name="simulated_tax_output.xlsx",
+                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                
+        except Exception as e:
+            st.error(f"Error reading dataset: {e}")
+
+elif mode == "Policy Lab":
     st.header(f"🧪 Policy Lab — {lab_type} Design")
     
     # Render Editor
