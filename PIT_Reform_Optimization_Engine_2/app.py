@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import io
+import re
 import time
 import importlib
 
@@ -62,6 +63,53 @@ if 'lab_slabs' not in st.session_state:
 def _norm(s):
     return str(s).lower().replace('-', ' ').replace('_', ' ').strip()
 
+@st.cache_data
+def load_truth_slabs(file_path):
+    df = pd.read_excel(file_path)
+    slabs = {}
+    surcharges = {}
+    
+    for (year, ttype), g in df.groupby(['Year', 'Tax_Type']):
+        ttype = str(ttype).strip().lower().replace('_', '-')
+        if ttype == 'non-salaried': ttype = 'Non-Salaried'
+        elif ttype == 'salaried': ttype = 'Salaried'
+        elif ttype == 'aop': ttype = 'AOP'
+        
+        g_slabs = []
+        s_thresh = 0.0
+        s_rate = 0.0
+        
+        for _, r in g.iterrows():
+            lower = str(r['Lower_slab']).strip().lower()
+            upper = str(r['Upper_slab']).strip().lower()
+            mtr = r['MTR']
+            tax_rate_str = str(r['TAX RATE']).lower()
+            
+            if pd.isna(mtr): continue
+            
+            is_surcharge = False
+            if 'surcharge' in lower or 'liability' in tax_rate_str:
+                is_surcharge = True
+            
+            if is_surcharge:
+                s_rate = float(mtr)
+                nums = re.findall(r'\d+', tax_rate_str.replace(',', ''))
+                if nums:
+                    s_thresh = float(nums[0])
+                elif lower.replace('.', '').isdigit():
+                    s_thresh = float(lower)
+            else:
+                l_val = pd.to_numeric(r['Lower_slab'], errors='coerce')
+                u_val = pd.to_numeric(r['Upper_slab'], errors='coerce') if upper != '+' else np.inf
+                if pd.notna(l_val) and pd.notna(mtr):
+                    if pd.isna(u_val): u_val = np.inf
+                    g_slabs.append({'lower_bound': float(l_val), 'upper_bound': float(u_val), 'marginal_rate': float(mtr)})
+                    
+        slabs[ttype] = pd.DataFrame(g_slabs)
+        surcharges[ttype] = {'threshold': s_thresh, 'rate': s_rate}
+        
+    return slabs, surcharges
+
 def _fmt_table(df):
     if df.empty: return df
     out = df.copy()
@@ -115,6 +163,12 @@ def _get_historical_data(grid_df, g_type, target_y):
             detr_out[label] = np.diff(h_etr, prepend=0.0) * 100.0
     return etr_out, detr_out
 
+# Single source of truth slab logic
+try:
+    TRUTH_SLABS, TRUTH_SURCHARGES = load_truth_slabs(r'C:\Users\LENOVO\OneDrive\Desktop\PIT_slabs_2025.xlsx')
+except Exception as e:
+    TRUTH_SLABS, TRUTH_SURCHARGES = {}, {}
+
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
     st.header("⚙️ Design Mode")
@@ -151,8 +205,13 @@ with st.sidebar:
                                      (df_slabs_agg['_norm'] == _norm(g_type))].copy()
                 if g_agg.empty: continue
                 total_tax = g_agg['normal_income_tax_920000'].sum()
-                base_slabs = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-                if base_slabs['marginal_rate'].max() > 1.0: base_slabs['marginal_rate'] /= 100.0
+                
+                t_nrm = _norm(g_type)
+                if t_nrm in TRUTH_SLABS and not TRUTH_SLABS[t_nrm].empty:
+                    base_slabs = TRUTH_SLABS[t_nrm].copy()
+                else:
+                    base_slabs = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
+                    if base_slabs['marginal_rate'].max() > 1.0: base_slabs['marginal_rate'] /= 100.0
                 
                 with st.spinner(f"⏳ Optimizing {g_type} …"):
                     t0 = time.time()
@@ -175,8 +234,12 @@ with st.sidebar:
                              (df_slabs_agg['_norm'] == _norm(lab_type))].copy()
         total_tax = g_agg['normal_income_tax_920000'].sum()
         
-        base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-        if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
+        lab_nrm = _norm(lab_type)
+        if lab_nrm in TRUTH_SLABS and not TRUTH_SLABS[lab_nrm].empty:
+            base_slabs_raw = TRUTH_SLABS[lab_nrm].copy()
+        else:
+            base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
+            if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
         base_list_calib = _schedule_to_list(base_slabs_raw)
 
         if st.session_state.lab_slabs is None or st.session_state.lab_type_active != lab_type:
@@ -227,18 +290,26 @@ if mode == "Custom Dataset Simulator":
                 for i, ttype in enumerate(tax_types):
                     with tabs[i]:
                         c1, c2 = st.columns(2)
+                        
+                        ttype_norm = _norm(ttype)
+                        default_thresh = TRUTH_SURCHARGES.get(ttype_norm, {}).get('threshold', 0.0)
+                        default_rate = TRUTH_SURCHARGES.get(ttype_norm, {}).get('rate', 0.0) * 100.0
+                        
                         with c1:
-                            sur_thresh = st.number_input("Surcharge Threshold (PKR)", min_value=0.0, value=0.0, step=100000.0, key=f"sur_thresh_{ttype}")
+                            sur_thresh = st.number_input("Surcharge Threshold (PKR)", min_value=0.0, value=float(default_thresh), step=100000.0, key=f"sur_thresh_{ttype}")
                         with c2:
-                            sur_rate = st.number_input("Surcharge Rate (%)", min_value=0.0, value=0.0, step=0.5, key=f"sur_rate_{ttype}")
+                            sur_rate = st.number_input("Surcharge Rate (%)", min_value=0.0, value=float(default_rate), step=0.5, key=f"sur_rate_{ttype}")
                         surcharges_dict[ttype] = {'threshold': sur_thresh, 'rate': sur_rate / 100.0}
                         
-                        g_agg = df_slabs_agg[(df_slabs_agg['year'] == selected_year) & (df_slabs_agg['_norm'] == _norm(ttype))].copy()
-                        if not g_agg.empty:
-                            base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-                            if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
+                        if ttype_norm in TRUTH_SLABS and not TRUTH_SLABS[ttype_norm].empty:
+                            base_slabs_raw = TRUTH_SLABS[ttype_norm].copy()
                         else:
-                            base_slabs_raw = pd.DataFrame({'lower_bound': [0], 'upper_bound': [np.inf], 'marginal_rate': [0.0]})
+                            g_agg = df_slabs_agg[(df_slabs_agg['year'] == selected_year) & (df_slabs_agg['_norm'] == ttype_norm)].copy()
+                            if not g_agg.empty:
+                                base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
+                                if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
+                            else:
+                                base_slabs_raw = pd.DataFrame({'lower_bound': [0], 'upper_bound': [np.inf], 'marginal_rate': [0.0]})
                             
                         st_key = f"sim_slabs_{ttype}"
                         if st_key not in st.session_state:
