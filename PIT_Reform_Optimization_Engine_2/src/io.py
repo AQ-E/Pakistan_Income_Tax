@@ -51,6 +51,9 @@ def load_slab_data(filepath):
         
     if 'marginal_rate' in df.columns:
         df['marginal_rate'] = pd.to_numeric(df['marginal_rate'], errors='coerce').fillna(0)
+    else:
+        df['marginal_rate'] = 0.0
+        
     if 'upper_bound' in df.columns:
         df['upper_bound'] = pd.to_numeric(df['upper_bound'], errors='coerce').fillna(np.inf)
     if 'lower_bound' in df.columns:
