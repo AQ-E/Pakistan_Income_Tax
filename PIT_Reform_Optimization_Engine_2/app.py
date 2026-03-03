@@ -370,7 +370,7 @@ else:
 
                 st.markdown("---")
                 y_grid = m['y']
-                etr_hist, detr_hist = _get_historical_data(df_grid_baseline, g_type, y_grid)
+                etr_hist, detr_hist = {}, {}  # Historical grid not required; data comes from Income Tax Liability S_NS_AOP.xlsx
                 cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
 
                 fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
