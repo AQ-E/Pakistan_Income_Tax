@@ -28,16 +28,27 @@ def load_slab_data(filepath):
             new_cols.append('upper_bound')
         elif 'year' in c_low:
             new_cols.append('year')
-        elif 'nit' in c_low:
-            new_cols.append('nit_calculated')
-        elif 'cetr' in c_low:
-            new_cols.append('cetr')
-        elif 'etr' in c_low:
-            new_cols.append('etr')
         else:
             new_cols.append(c.lower().replace(' ', '_'))
     df.columns = new_cols
 
+    # Robust LB / UB parser from 'Taxable Income Slab (Rs.)'
+    def parse_slab(s):
+        import re
+        s = str(s).replace(',', '').strip()
+        if '-' in s:
+            p = s.split('-')
+            return float(p[0]), float(p[1])
+        elif 'Above' in s or '+' in s:
+            p = re.findall(r'\d+', s)
+            if p: return float(p[0]) + 1, np.inf
+            return 0.0, np.inf
+        else:
+            return 0.0, np.inf
+
+    if 'taxable_income_slab_(rs.)' in df.columns:
+        df['lower_bound'], df['upper_bound'] = zip(*df['taxable_income_slab_(rs.)'].apply(parse_slab))
+        
     if 'marginal_rate' in df.columns:
         df['marginal_rate'] = pd.to_numeric(df['marginal_rate'], errors='coerce').fillna(0)
     if 'upper_bound' in df.columns:
@@ -111,5 +122,6 @@ def get_data_paths():
     """
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     slab_file = os.path.join(base_dir, 'Income Tax Liability S_NS_AOP.xlsx')
-    grid_file = os.path.join(base_dir, 'tax liability at 1 Lac.xlsx')
-    return slab_file, grid_file
+    grid_file = os.path.join(base_dir, 'tax liability at 1 Lac.xlsx')  # Optional auxiliary
+    truth_file = os.path.join(base_dir, 'PIT_slabs_2025.xlsx')
+    return slab_file, truth_file

@@ -44,10 +44,10 @@ st.title("PIT Reform Optimization Engine")
 st.markdown("---")
 
 # ───────────────────────── Data Loading ─────────────────────────
-slab_path, grid_path = get_data_paths()
+slab_path, truth_path = get_data_paths()
 try:
     df_slabs_agg = load_slab_data(slab_path)
-    df_grid_baseline = load_grid_data(grid_path)
+    # df_grid_baseline = load_grid_data(grid_path) # obsolete dependency
 except Exception as e:
     st.error(f"Error loading data: {e}")
     st.stop()
@@ -165,7 +165,7 @@ def _get_historical_data(grid_df, g_type, target_y):
 
 # Single source of truth slab logic
 try:
-    TRUTH_SLABS, TRUTH_SURCHARGES = load_truth_slabs(r'C:\Users\LENOVO\OneDrive\Desktop\PIT_slabs_2025.xlsx')
+    TRUTH_SLABS, TRUTH_SURCHARGES = load_truth_slabs(truth_path)
 except Exception as e:
     TRUTH_SLABS, TRUTH_SURCHARGES = {}, {}
 
