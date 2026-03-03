@@ -62,15 +62,17 @@ def load_slab_data(filepath):
 
     # Create a Consolidated type
     if 'year' in df.columns and 'taxpayer_type' in df.columns and 'lower_bound' in df.columns:
-        cons_df = df.groupby(['year', 'lower_bound', 'upper_bound']).agg({
+        agg_dict = {
             'total_filers': 'sum',
             'taxable_income_9100': 'sum',
             'normal_income_tax_920000': 'sum',
-            'marginal_rate': 'mean', # Rough average for baseline rate, solver uses this as a start.
-            'nit_calculated': 'sum' if 'nit_calculated' in df.columns else 'first',
-            'etr': 'mean' if 'etr' in df.columns else 'first',
-            'cetr': 'mean' if 'cetr' in df.columns else 'first'
-        }).reset_index()
+        }
+        if 'marginal_rate' in df.columns: agg_dict['marginal_rate'] = 'mean'
+        if 'nit_calculated' in df.columns: agg_dict['nit_calculated'] = 'sum'
+        if 'etr' in df.columns: agg_dict['etr'] = 'mean'
+        if 'cetr' in df.columns: agg_dict['cetr'] = 'mean'
+        
+        cons_df = df.groupby(['year', 'lower_bound', 'upper_bound']).agg(agg_dict).reset_index()
         cons_df['taxpayer_type'] = 'Consolidated'
         
         # We need to make sure all other columns exist
