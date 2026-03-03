@@ -63,6 +63,20 @@ if 'lab_slabs' not in st.session_state:
 def _norm(s):
     return str(s).lower().replace('-', ' ').replace('_', ' ').strip()
 
+def _get_truth_slabs(g_type):
+    """Case-insensitive lookup into TRUTH_SLABS dict."""
+    for k, v in TRUTH_SLABS.items():
+        if _norm(k) == _norm(g_type):
+            return v.copy() if not v.empty else None
+    return None
+
+def _get_truth_surcharge(g_type):
+    """Case-insensitive lookup into TRUTH_SURCHARGES dict."""
+    for k, v in TRUTH_SURCHARGES.items():
+        if _norm(k) == _norm(g_type):
+            return v
+    return {'threshold': 0.0, 'rate': 0.0}
+
 @st.cache_data
 def load_truth_slabs(file_path):
     df = pd.read_excel(file_path)
@@ -206,10 +220,9 @@ with st.sidebar:
                 if g_agg.empty: continue
                 total_tax = g_agg['normal_income_tax_920000'].sum()
                 
-                t_nrm = _norm(g_type)
-                if t_nrm in TRUTH_SLABS and not TRUTH_SLABS[t_nrm].empty:
-                    base_slabs = TRUTH_SLABS[t_nrm].copy()
-                else:
+                # Always use PIT_slabs_2025.xlsx as truth for base slabs
+                base_slabs = _get_truth_slabs(g_type)
+                if base_slabs is None:
                     base_slabs = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
                     if base_slabs['marginal_rate'].max() > 1.0: base_slabs['marginal_rate'] /= 100.0
                 
@@ -235,9 +248,9 @@ with st.sidebar:
         total_tax = g_agg['normal_income_tax_920000'].sum()
         
         lab_nrm = _norm(lab_type)
-        if lab_nrm in TRUTH_SLABS and not TRUTH_SLABS[lab_nrm].empty:
-            base_slabs_raw = TRUTH_SLABS[lab_nrm].copy()
-        else:
+        # Always use PIT_slabs_2025.xlsx as truth for Policy Lab base
+        base_slabs_raw = _get_truth_slabs(lab_type)
+        if base_slabs_raw is None:
             base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
             if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
         base_list_calib = _schedule_to_list(base_slabs_raw)
@@ -425,8 +438,9 @@ else:
                         
                         sch = res['schedule_list']
                         ttype_norm = _norm(g_type)
-                        sur_thresh = TRUTH_SURCHARGES.get(ttype_norm, {}).get('threshold', 0.0)
-                        sur_rate = TRUTH_SURCHARGES.get(ttype_norm, {}).get('rate', 0.0)
+                        sur_info = _get_truth_surcharge(g_type)
+                        sur_thresh = sur_info.get('threshold', 0.0)
+                        sur_rate = sur_info.get('rate', 0.0)
                         
                         y = group['Taxable Income (9100)'].values.astype(float)
                         
