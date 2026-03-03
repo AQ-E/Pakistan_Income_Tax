@@ -172,8 +172,8 @@ except Exception as e:
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
     st.header("⚙️ Design Mode")
-    mode = st.radio("Optimization Strategy", ["Custom Dataset Simulator", "Auto Optimize", "Policy Lab"], 
-                    help="Simulator: Upload and estimate. Auto: System finds best schedule. Lab: You design it.")
+    mode = st.radio("Optimization Strategy", ["Data Management", "Auto Optimize", "Policy Lab"], 
+                    help="Data: Upload raw data. Auto: System finds best schedule. Lab: You design it.")
 
     st.markdown("---")
     st.header("📋 General Settings")
@@ -255,161 +255,26 @@ with st.sidebar:
         st.info("💡 **Policy Lab Guide**:\n- **Double-click** a cell to edit.\n- **Add Slabs**: Click the '+' at the bottom.\n- **Remove Slabs**: Select a row and press Delete.\n- **Final Slab**: Leave Upper Bound empty or put a large number; the engine will treat it as 'Above'.")
 
 # ───────────────────────── Main Dashboard ─────────────────────────
-if mode == "Custom Dataset Simulator":
-    st.header("📂 Custom Dataset Simulator")
-    st.markdown("Upload your dataset to apply dynamic slab routing and surcharge rules.")
+if mode == "Data Management":
+    st.header("📂 Data Management")
+    st.markdown("Upload your raw datasets to permanently update the system's baseline. **Auto Optimize** and **Policy Lab** will automatically use these overriding files.")
     
-    uploaded_file = st.file_uploader("Upload Excel Dataset", type=["xlsx", "xls"])
-    
-    if uploaded_file is not None:
-        try:
-            df_upload = pd.read_excel(uploaded_file)
-            req_cols = ["Taxable Income Slab (Rs.)", "Year", "Type_Tax", "Number of Persons", "Taxable Income (9100)", "Normal Income Tax (920000)"]
-            missing = [c for c in req_cols if c not in df_upload.columns]
-            if missing:
-                st.error(f"❌ Missing required columns: {', '.join(missing)}")
-            else:
-                st.success("✅ File uploaded and validated successfully!")
-                
-                # Surcharge Parameters UI
-                st.markdown("### ⚙️ Surcharge & Slab Settings")
-                
-                tax_types = ['Salaried', 'Non-Salaried', 'AOP']
-                upload_types = df_upload['Type_Tax'].dropna().unique()
-                for ut in upload_types:
-                    if ut not in tax_types:
-                        tax_types.append(ut)
-                
-                tabs = st.tabs(tax_types)
-                
-                schedules_dict = {}
-                surcharges_dict = {}
-                
-                df_slabs_agg['_norm'] = df_slabs_agg['taxpayer_type'].apply(_norm)
-                
-                for i, ttype in enumerate(tax_types):
-                    with tabs[i]:
-                        c1, c2 = st.columns(2)
-                        
-                        ttype_norm = _norm(ttype)
-                        default_thresh = TRUTH_SURCHARGES.get(ttype_norm, {}).get('threshold', 0.0)
-                        default_rate = TRUTH_SURCHARGES.get(ttype_norm, {}).get('rate', 0.0) * 100.0
-                        
-                        with c1:
-                            sur_thresh = st.number_input("Surcharge Threshold (PKR)", min_value=0.0, value=float(default_thresh), step=100000.0, key=f"sur_thresh_{ttype}")
-                        with c2:
-                            sur_rate = st.number_input("Surcharge Rate (%)", min_value=0.0, value=float(default_rate), step=0.5, key=f"sur_rate_{ttype}")
-                        surcharges_dict[ttype] = {'threshold': sur_thresh, 'rate': sur_rate / 100.0}
-                        
-                        if ttype_norm in TRUTH_SLABS and not TRUTH_SLABS[ttype_norm].empty:
-                            base_slabs_raw = TRUTH_SLABS[ttype_norm].copy()
-                        else:
-                            g_agg = df_slabs_agg[(df_slabs_agg['year'] == selected_year) & (df_slabs_agg['_norm'] == ttype_norm)].copy()
-                            if not g_agg.empty:
-                                base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-                                if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
-                            else:
-                                base_slabs_raw = pd.DataFrame({'lower_bound': [0], 'upper_bound': [np.inf], 'marginal_rate': [0.0]})
-                            
-                        st_key = f"sim_slabs_{ttype}"
-                        if st_key not in st.session_state:
-                            st.session_state[st_key] = base_slabs_raw.reset_index(drop=True)
-                            
-                        edited_df = st.data_editor(
-                            st.session_state[st_key],
-                            key=f"editor_{ttype}",
-                            num_rows="dynamic",
-                            use_container_width=True,
-                            column_config={
-                                "lower_bound": st.column_config.NumberColumn("Lower Bound (PKR)", format="%d", min_value=0),
-                                "upper_bound": st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
-                                "marginal_rate": st.column_config.NumberColumn("MTR", format="%.2f", min_value=0.0, max_value=1.0)
-                            }
-                        )
-                        
-                        if not edited_df.empty:
-                            edited_df = edited_df.sort_values('lower_bound').reset_index(drop=True)
-                            last_idx = edited_df.index[-1]
-                            val = edited_df.loc[last_idx, 'upper_bound']
-                            if pd.isna(val) or val > 500_000_000 or val <= edited_df.loc[last_idx, 'lower_bound']:
-                                edited_df.loc[last_idx, 'upper_bound'] = np.inf
-                            for j in range(1, len(edited_df)):
-                                edited_df.loc[j-1, 'upper_bound'] = edited_df.loc[j, 'lower_bound']
-                                
-                        st.session_state[st_key] = edited_df
-                        schedules_dict[ttype] = _schedule_to_list(edited_df)
-                        
-                # Compute Engine
-                out_dfs = []
-                for (year, g_ttype), group in df_upload.groupby(['Year', 'Type_Tax']):
-                    group = group.sort_values('Taxable Income (9100)').copy()
-                    
-                    sch = None
-                    sur_thresh, sur_rate = 0.0, 0.0
-                    
-                    ttype_norm = _norm(g_ttype)
-                    for k in tax_types:
-                        if _norm(k) == ttype_norm:
-                            sch = schedules_dict[k]
-                            sur_thresh = surcharges_dict[k]['threshold']
-                            sur_rate = surcharges_dict[k]['rate']
-                            break
-                            
-                    if not sch:
-                        out_dfs.append(group)
-                        continue
-                        
-                    y = group['Taxable Income (9100)'].values.astype(float)
-                    
-                    lowers = np.array([s['lower'] for s in sch])
-                    rates = np.array([s['rate'] for s in sch])
-                    uppers = np.array([s['upper'] for s in sch])
-                    
-                    base_cum = np.zeros(len(sch))
-                    for k in range(1, len(sch)):
-                        width = uppers[k-1] - lowers[k-1]
-                        w = np.where(np.isinf(width), 0, width)
-                        base_cum[k] = base_cum[k-1] + w * rates[k-1]
-                        
-                    idx = np.searchsorted(lowers, y, side='right') - 1
-                    idx = np.clip(idx, 0, len(sch) - 1)
-                    mtr = rates[idx]
-                    
-                    base_tax = base_cum[idx] + (y - lowers[idx]) * mtr
-                    base_tax = np.maximum(base_tax, 0.0)
-                    
-                    nit_est = np.where(y >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
-                    
-                    etr = np.zeros_like(y)
-                    mask = y > 0
-                    etr[mask] = nit_est[mask] / y[mask]
-                    
-                    detr = np.zeros_like(etr)
-                    detr[1:] = etr[1:] - etr[:-1]
-                    
-                    group['MTR'] = mtr
-                    group['BaseTax'] = base_tax
-                    group['NIT Estimated'] = nit_est
-                    group['ETR'] = etr
-                    group['ΔETR'] = detr
-                    
-                    out_dfs.append(group)
-                    
-                if out_dfs:
-                    final_df = pd.concat(out_dfs, ignore_index=True)
-                    st.markdown("### 📊 Processed Dataset Output")
-                    st.dataframe(final_df)
-                    
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        final_df.to_excel(writer, index=False)
-                    st.download_button(label="📥 Download Simulated Dataset",
-                                       data=output.getvalue(),
-                                       file_name="simulated_tax_output.xlsx",
-                                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-                
-        except Exception as e:
-            st.error(f"Error reading dataset: {e}")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("Base Observations")
+        st.markdown("`Income Tax Liability S_NS_AOP.xlsx`")
+        f_obs = st.file_uploader("Upload Observations", type=["xlsx", "xls"], key="up_obs")
+        if f_obs:
+            with open(slab_path, "wb") as f: f.write(f_obs.getvalue())
+            st.success("✅ Base Observations Updated! Reload the app to apply.")
+            
+    with col2:
+        st.subheader("Truth Slabs & Surcharges")
+        st.markdown("`PIT_slabs_2025.xlsx`")
+        f_truth = st.file_uploader("Upload Truth Specs", type=["xlsx", "xls"], key="up_tr")
+        if f_truth:
+            with open(truth_path, "wb") as f: f.write(f_truth.getvalue())
+            st.success("✅ Truth Slabs Updated! Reload the app to apply.")
 
 elif mode == "Policy Lab":
     st.header(f"🧪 Policy Lab — {lab_type} Design")
@@ -487,7 +352,7 @@ else:
             if uplift < -0.001:
                 st.warning(f"⚠️ **Revenue below baseline** (PKR {rev/1e9:,.1f}B < PKR {base_rev/1e9:,.1f}B) — Policy Unsafe")
             
-            t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
+            t_ana, t_cmp, t_data = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison", "💾 Computed Dataset"])
             with t_ana:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
                 c1, c2, c3, c4, c5 = st.columns(5)
@@ -532,3 +397,90 @@ else:
                     st.table(_fmt_table(res['schedule_df']))
                 st.subheader("🔄 Detailed Transition View")
                 st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
+                
+            with t_data:
+                st.markdown("### 📊 Dataset Mathematics")
+                st.markdown(f"Applying formula logic to mathematically calculate \`MTR\`, \`NIT Estimated\`, \`ETR\`, and \`ΔETR\` observation-by-observation for **{g_type}** using `Income Tax Liability S_NS_AOP.xlsx` mapping against the current Policy model.")
+                
+                try:
+                    df_upload = pd.read_excel(slab_path)
+                    
+                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
+                    tgt_t = type_mapping.get(g_type, g_type)
+                    
+                    # Fuzzy match if necessary
+                    if tgt_t not in df_upload['Type_Tax'].unique() and tgt_t != 'C':
+                        tgt_t = g_type
+                    
+                    # Consolidate or filter    
+                    if g_type == 'Consolidated' or tgt_t == 'C':
+                        group = df_upload.copy()
+                    else:
+                        group = df_upload[df_upload['Type_Tax'] == tgt_t].copy()
+                        
+                    if group.empty:
+                        st.warning(f"No specific dataset rows found internally for {g_type}.")
+                    else:
+                        group = group.sort_values(by=['Year', 'Taxable Income (9100)']).copy()
+                        
+                        sch = res['schedule_list']
+                        ttype_norm = _norm(g_type)
+                        sur_thresh = TRUTH_SURCHARGES.get(ttype_norm, {}).get('threshold', 0.0)
+                        sur_rate = TRUTH_SURCHARGES.get(ttype_norm, {}).get('rate', 0.0)
+                        
+                        y = group['Taxable Income (9100)'].values.astype(float)
+                        
+                        lowers = np.array([s['lower'] for s in sch])
+                        rates = np.array([s['rate'] for s in sch])
+                        uppers = np.array([s['upper'] for s in sch])
+                        
+                        base_cum = np.zeros(len(sch))
+                        for k in range(1, len(sch)):
+                            width = uppers[k-1] - lowers[k-1]
+                            w = np.where(np.isinf(width), 0, width)
+                            base_cum[k] = base_cum[k-1] + w * rates[k-1]
+                            
+                        idx = np.searchsorted(lowers, y, side='right') - 1
+                        idx = np.clip(idx, 0, len(sch) - 1)
+                        mtr = rates[idx]
+                        
+                        base_tax = base_cum[idx] + (y - lowers[idx]) * mtr
+                        base_tax = np.maximum(base_tax, 0.0)
+                        
+                        nit_est = np.where(y >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
+                        
+                        etr = np.zeros_like(y)
+                        mask = y > 0
+                        etr[mask] = nit_est[mask] / y[mask]
+                        
+                        detr = np.zeros_like(etr)
+                        
+                        # Calculate ΔETR respecting groups
+                        if 'Year' in group.columns and 'Type_Tax' in group.columns:
+                            for (gyear, gtax), sub_idx in group.groupby(['Year', 'Type_Tax']).groups.items():
+                                sub_y = y[sub_idx]
+                                sub_etr = etr[sub_idx]
+                                sub_detr = np.zeros_like(sub_etr)
+                                sub_detr[1:] = sub_etr[1:] - sub_etr[:-1]
+                                detr[sub_idx] = sub_detr
+                        else:
+                            detr[1:] = etr[1:] - etr[:-1]
+                        
+                        group['MTR'] = mtr
+                        group['BaseTax'] = base_tax
+                        group['NIT Estimated'] = nit_est
+                        group['ETR'] = etr
+                        group['ΔETR'] = detr
+                        
+                        st.dataframe(group)
+                        
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            group.to_excel(writer, index=False)
+                        st.download_button(label=f"📥 Download {g_type} Computed Export",
+                                           data=output.getvalue(),
+                                           file_name=f"{g_type}_tax_output.xlsx",
+                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                           key=f"dl_{g_type}")
+                except Exception as e:
+                    st.error(f"Error computing dataset metrics internally: {e}")
