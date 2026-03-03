@@ -128,32 +128,55 @@ def load_truth_slabs(file_path):
         for _, r in g.iterrows():
             lower = str(r['Lower_slab']).strip().lower()
             upper = str(r['Upper_slab']).strip().lower()
-            mtr = r['MTR']
+            mtr   = r['MTR']
             tax_rate_str = str(r['TAX RATE']).lower()
-            
-            if pd.isna(mtr): continue
-            
-            is_surcharge = False
-            if 'surcharge' in lower or 'liability' in tax_rate_str:
-                is_surcharge = True
-            
+
+            # Skip NaN rows (separator rows in Excel)
+            if pd.isna(mtr) and 'surcharge' not in lower and 'surcharge' not in upper:
+                continue
+
+            is_surcharge = 'surcharge' in lower or 'surcharge' in upper or 'liability' in tax_rate_str
+
             if is_surcharge:
-                s_rate = float(mtr)
-                nums = re.findall(r'\d+', tax_rate_str.replace(',', ''))
-                if nums:
-                    s_thresh = float(nums[0])
-                elif lower.replace('.', '').isdigit():
-                    s_thresh = float(lower)
+                # Extract surcharge rate — use MTR column if valid, else parse text
+                if pd.notna(mtr):
+                    s_rate = float(mtr)
+                else:
+                    pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', tax_rate_str)
+                    s_rate = float(pct[0]) / 100.0 if pct else 0.0
+
+                # Extract surcharge income threshold from Lower_slab or text
+                # Lower_slab row often contains the threshold value directly
+                l_num = pd.to_numeric(r['Lower_slab'], errors='coerce')
+                if pd.notna(l_num):
+                    s_thresh = float(l_num)
+                else:
+                    # Parse from text: pick the LARGEST number (that's the income threshold)
+                    nums = [float(n.replace(',', '')) for n in re.findall(r'[\d,]+', tax_rate_str) if n.replace(',', '').isdigit()]
+                    # Threshold is a large income figure; rate-like numbers are small
+                    income_nums = [n for n in nums if n >= 100_000]
+                    s_thresh = income_nums[0] if income_nums else 0.0
+
             else:
                 l_val = pd.to_numeric(r['Lower_slab'], errors='coerce')
-                u_val = pd.to_numeric(r['Upper_slab'], errors='coerce') if upper != '+' else np.inf
-                if pd.notna(l_val) and pd.notna(mtr):
-                    if pd.isna(u_val): u_val = np.inf
-                    g_slabs.append({'lower_bound': float(l_val), 'upper_bound': float(u_val), 'marginal_rate': float(mtr)})
-                    
-        slabs[ttype] = pd.DataFrame(g_slabs)
+                u_val = np.inf if upper == '+' else pd.to_numeric(r['Upper_slab'], errors='coerce')
+                if pd.isna(u_val): u_val = np.inf
+
+                # MTR column is the source of truth.
+                # Only fall back to TAX RATE text if MTR cell is blank.
+                if pd.notna(mtr):
+                    mtr_val = float(mtr)
+                else:
+                    pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', tax_rate_str)
+                    mtr_val = float(pct[-1]) / 100.0 if pct else 0.0
+
+                if pd.notna(l_val):
+                    g_slabs.append({'lower_bound': float(l_val), 'upper_bound': float(u_val), 'marginal_rate': mtr_val})
+
+
+        slabs[ttype]     = pd.DataFrame(g_slabs)
         surcharges[ttype] = {'threshold': s_thresh, 'rate': s_rate}
-        
+
     return slabs, surcharges
 
 def _fmt_table(df):
