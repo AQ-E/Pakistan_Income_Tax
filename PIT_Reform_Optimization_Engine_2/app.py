@@ -71,12 +71,10 @@ if not _has_upload:
         st.rerun()
     st.stop()
 
-# — File is uploaded; write to a temp path and load —
-import tempfile as _tf
-_tmp = _tf.NamedTemporaryFile(delete=False, suffix='.xlsx')
-_tmp.write(st.session_state.uploaded_obs_bytes)
-_tmp.close()
-_obs_path = _tmp.name
+# — File is uploaded; use BytesIO directly (no temp file needed) —
+import io as _io
+_obs_buf = _io.BytesIO(st.session_state.uploaded_obs_bytes)
+_obs_path = _obs_buf   # pass BytesIO to load_slab_data
 
 try:
     df_slabs_agg = load_slab_data(_obs_path)
@@ -501,7 +499,7 @@ else:
 
                     type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
                     tgt_raw  = type_mapping.get(g_type, g_type)
-                    raw_obs  = pd.read_excel(_obs_path)
+                    raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
                     grp_obs  = raw_obs.copy() if g_type == 'Consolidated' else (
                                raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy())
 

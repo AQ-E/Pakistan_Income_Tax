@@ -5,8 +5,9 @@ import os
 def load_slab_data(filepath):
     """
     Loads and cleans the slab-level aggregate dataset.
+    filepath can be a path string OR a BytesIO object.
     """
-    df = pd.read_excel(filepath)
+    df = pd.read_excel(filepath, engine='openpyxl')
     df.columns = [" ".join(str(c).split()) for c in df.columns]
     
     new_cols = []
