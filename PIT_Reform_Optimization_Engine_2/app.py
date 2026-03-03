@@ -45,11 +45,21 @@ st.markdown("---")
 
 # ───────────────────────── Data Loading ─────────────────────────
 slab_path, truth_path = get_data_paths()
+
+# Allow user to upload a fresh observations file via session state
+if 'uploaded_obs_bytes' in st.session_state and st.session_state.uploaded_obs_bytes is not None:
+    import tempfile, os
+    _tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
+    _tmp.write(st.session_state.uploaded_obs_bytes)
+    _tmp.close()
+    _obs_path = _tmp.name
+else:
+    _obs_path = slab_path
+
 try:
-    df_slabs_agg = load_slab_data(slab_path)
-    # df_grid_baseline = load_grid_data(grid_path) # obsolete dependency
+    df_slabs_agg = load_slab_data(_obs_path)
 except Exception as e:
-    st.error(f"Error loading data: {e}")
+    st.error(f"Error loading observations data: {e}")
     st.stop()
 
 # ───────────────────────── Session State ─────────────────────────
@@ -185,9 +195,27 @@ except Exception as e:
 
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
+    # — Upload observations data —
+    st.header("📂 Upload Data")
+    _uploaded = st.file_uploader(
+        "Upload Observations File",
+        type=["xlsx", "xls"],
+        help="Upload your Income Tax Liability dataset (S/NS/AOP). Required columns: Taxable Income Slab (Rs.), Year, Type_Tax, Number of Persons, Taxable Income (9100), Normal Income Tax (920000)"
+    )
+    if _uploaded is not None:
+        st.session_state.uploaded_obs_bytes = _uploaded.getvalue()
+        st.success("✅ File loaded.")
+        st.rerun()
+
+    if 'uploaded_obs_bytes' in st.session_state and st.session_state.uploaded_obs_bytes:
+        st.info("📊 Using uploaded observations file.")
+    else:
+        st.caption("Using default system observations.")
+
+    st.markdown("---")
     st.header("⚙️ Design Mode")
-    mode = st.radio("Optimization Strategy", ["Data Management", "Auto Optimize", "Policy Lab"], 
-                    help="Data: Upload raw data. Auto: System finds best schedule. Lab: You design it.")
+    mode = st.radio("Optimization Strategy", ["Auto Optimize", "Policy Lab"],
+                    help="Auto: System finds best schedule. Lab: You design it.")
 
     st.markdown("---")
     st.header("📋 General Settings")
@@ -233,7 +261,7 @@ with st.sidebar:
                     st.session_state.results[g_type] = res
             st.success("✅ Done!")
 
-    else: # Policy Lab
+    else:  # Policy Lab — this runs when mode != "Auto Optimize"
         st.markdown("### Policy Lab Setup")
         lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "Consolidated"])
         
@@ -268,28 +296,7 @@ with st.sidebar:
         st.info("💡 **Policy Lab Guide**:\n- **Double-click** a cell to edit.\n- **Add Slabs**: Click the '+' at the bottom.\n- **Remove Slabs**: Select a row and press Delete.\n- **Final Slab**: Leave Upper Bound empty or put a large number; the engine will treat it as 'Above'.")
 
 # ───────────────────────── Main Dashboard ─────────────────────────
-if mode == "Data Management":
-    st.header("📂 Data Management")
-    st.markdown("Upload your raw datasets to permanently update the system's baseline. **Auto Optimize** and **Policy Lab** will automatically use these overriding files.")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Base Observations")
-        st.markdown("`Income Tax Liability S_NS_AOP.xlsx`")
-        f_obs = st.file_uploader("Upload Observations", type=["xlsx", "xls"], key="up_obs")
-        if f_obs:
-            with open(slab_path, "wb") as f: f.write(f_obs.getvalue())
-            st.success("✅ Base Observations Updated! Reload the app to apply.")
-            
-    with col2:
-        st.subheader("Truth Slabs & Surcharges")
-        st.markdown("`PIT_slabs_2025.xlsx`")
-        f_truth = st.file_uploader("Upload Truth Specs", type=["xlsx", "xls"], key="up_tr")
-        if f_truth:
-            with open(truth_path, "wb") as f: f.write(f_truth.getvalue())
-            st.success("✅ Truth Slabs Updated! Reload the app to apply.")
-
-elif mode == "Policy Lab":
+if mode == "Policy Lab":
     st.header(f"🧪 Policy Lab — {lab_type} Design")
     
     # Render Editor
