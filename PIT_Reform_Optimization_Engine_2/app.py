@@ -355,10 +355,18 @@ if mode == "Policy Lab":
             st.session_state.lab_slabs = res['schedule_df']
             st.rerun()
 
-# Display Results
+# ───────────────────────── Display Results ─────────────────────────
+
+# Gate: require uploaded data before showing any output
+_data_ready = 'uploaded_obs_bytes' in st.session_state and st.session_state.get('uploaded_obs_bytes') is not None
+
+if not _data_ready:
+    st.info("👈 Please upload your **Observations File** in the sidebar to begin analysis.")
+    st.stop()
+
 results = st.session_state.results
 if not results:
-    st.info("👈 Click **Auto-Optimize Policy** or adjust **Policy Lab** to start.")
+    st.info("👈 Click **Auto-Optimize Policy** or adjust **Policy Lab** slabs to generate results.")
 else:
     tab_labels = list(results.keys())
     tabs = st.tabs(tab_labels)
@@ -372,7 +380,7 @@ else:
             if uplift < -0.001:
                 st.warning(f"⚠️ **Revenue below baseline** (PKR {rev/1e9:,.1f}B < PKR {base_rev/1e9:,.1f}B) — Policy Unsafe")
             
-            t_ana, t_cmp, t_data = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison", "💾 Computed Dataset"])
+            t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
             with t_ana:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
                 c1, c2, c3, c4, c5 = st.columns(5)
@@ -390,7 +398,7 @@ else:
 
                 st.markdown("---")
                 y_grid = m['y']
-                etr_hist, detr_hist = {}, {}  # Historical grid not required; data comes from Income Tax Liability S_NS_AOP.xlsx
+                etr_hist, detr_hist = {}, {}
                 cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
 
                 fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
@@ -399,13 +407,82 @@ else:
                 fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
                 st.plotly_chart(fig_detr, use_container_width=True)
 
+                # ─── Observation-level metrics from observations data ───
+                try:
+                    df_obs = load_slab_data(_obs_path)
+                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
+                    tgt_t = type_mapping.get(g_type, g_type)
+                    if tgt_t not in df_obs.get('taxpayer_type', pd.Series()).values and g_type != 'Consolidated':
+                        # try direct
+                        tgt_t = g_type
+                    
+                    raw_obs = pd.read_excel(_obs_path)
+                    if g_type == 'Consolidated':
+                        grp_obs = raw_obs.copy()
+                    else:
+                        tgt_raw = type_mapping.get(g_type, g_type)
+                        grp_obs = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
+
+                    if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
+                        grp_obs = grp_obs.sort_values(by=['Year', 'Taxable Income (9100)'] if 'Year' in grp_obs.columns else ['Taxable Income (9100)']).copy()
+                        sch = res['schedule_list']
+                        sur_info = _get_truth_surcharge(g_type)
+                        sur_thresh = sur_info.get('threshold', 0.0)
+                        sur_rate = sur_info.get('rate', 0.0)
+
+                        y_obs = grp_obs['Taxable Income (9100)'].values.astype(float)
+                        lowers = np.array([s['lower'] for s in sch])
+                        rates  = np.array([s['rate']  for s in sch])
+                        uppers = np.array([s['upper'] for s in sch])
+                        base_cum = np.zeros(len(sch))
+                        for k in range(1, len(sch)):
+                            w = uppers[k-1] - lowers[k-1]
+                            base_cum[k] = base_cum[k-1] + (0 if np.isinf(w) else w) * rates[k-1]
+                        idx = np.clip(np.searchsorted(lowers, y_obs, side='right') - 1, 0, len(sch)-1)
+                        mtr_obs   = rates[idx]
+                        base_tax  = np.maximum(base_cum[idx] + (y_obs - lowers[idx]) * mtr_obs, 0.0)
+                        nit_est   = np.where(y_obs >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
+                        etr_obs   = np.where(y_obs > 0, nit_est / y_obs, 0.0)
+                        detr_obs  = np.zeros_like(etr_obs)
+                        if 'Year' in grp_obs.columns and 'Type_Tax' in grp_obs.columns:
+                            for _, sub_idx in grp_obs.groupby(['Year','Type_Tax']).groups.items():
+                                sub_e = etr_obs[sub_idx]
+                                sub_d = np.zeros_like(sub_e)
+                                sub_d[1:] = sub_e[1:] - sub_e[:-1]
+                                detr_obs[sub_idx] = sub_d
+                        else:
+                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]
+
+                        grp_obs['MTR']           = mtr_obs
+                        grp_obs['BaseTax']        = base_tax
+                        grp_obs['NIT Estimated']  = nit_est
+                        grp_obs['ETR']            = etr_obs
+                        grp_obs['ΔETR']           = detr_obs
+
+                        st.markdown("---")
+                        st.markdown("#### 📊 Observation-Level Tax Metrics")
+                        st.dataframe(grp_obs, use_container_width=True)
+
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            grp_obs.to_excel(writer, index=False)
+                        st.download_button(
+                            label=f"📥 Download {g_type} Computed Metrics",
+                            data=output.getvalue(),
+                            file_name=f"{g_type}_computed_metrics.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{g_type}"
+                        )
+                except Exception:
+                    pass  # If obs metrics fail, heatmaps above still render fine
+
                 with st.expander("📈 Advanced Policy Charts"):
                     ca, cb = st.columns(2)
                     from src.viz import plot_staircase_rates, plot_revenue_contribution, plot_etr_curve
                     with ca: st.plotly_chart(plot_staircase_rates(m, res['schedule_list']), use_container_width=True)
                     with cb: st.plotly_chart(plot_revenue_contribution(res['agg_df'], res['schedule_list']), use_container_width=True)
                     st.plotly_chart(plot_progressivity_slope(m, bm), use_container_width=True)
-                    st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks=etr_hist, title=f"{g_type} ETR Comparison"), use_container_width=True)
+                    st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks={}, title=f"{g_type} ETR Comparison"), use_container_width=True)
 
             with t_cmp:
                 cb, cp = st.columns(2)
@@ -417,91 +494,3 @@ else:
                     st.table(_fmt_table(res['schedule_df']))
                 st.subheader("🔄 Detailed Transition View")
                 st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
-                
-            with t_data:
-                st.markdown("### 📊 Dataset Mathematics")
-                st.markdown(f"Applying formula logic to mathematically calculate \`MTR\`, \`NIT Estimated\`, \`ETR\`, and \`ΔETR\` observation-by-observation for **{g_type}** using `Income Tax Liability S_NS_AOP.xlsx` mapping against the current Policy model.")
-                
-                try:
-                    df_upload = pd.read_excel(slab_path)
-                    
-                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
-                    tgt_t = type_mapping.get(g_type, g_type)
-                    
-                    # Fuzzy match if necessary
-                    if tgt_t not in df_upload['Type_Tax'].unique() and tgt_t != 'C':
-                        tgt_t = g_type
-                    
-                    # Consolidate or filter    
-                    if g_type == 'Consolidated' or tgt_t == 'C':
-                        group = df_upload.copy()
-                    else:
-                        group = df_upload[df_upload['Type_Tax'] == tgt_t].copy()
-                        
-                    if group.empty:
-                        st.warning(f"No specific dataset rows found internally for {g_type}.")
-                    else:
-                        group = group.sort_values(by=['Year', 'Taxable Income (9100)']).copy()
-                        
-                        sch = res['schedule_list']
-                        ttype_norm = _norm(g_type)
-                        sur_info = _get_truth_surcharge(g_type)
-                        sur_thresh = sur_info.get('threshold', 0.0)
-                        sur_rate = sur_info.get('rate', 0.0)
-                        
-                        y = group['Taxable Income (9100)'].values.astype(float)
-                        
-                        lowers = np.array([s['lower'] for s in sch])
-                        rates = np.array([s['rate'] for s in sch])
-                        uppers = np.array([s['upper'] for s in sch])
-                        
-                        base_cum = np.zeros(len(sch))
-                        for k in range(1, len(sch)):
-                            width = uppers[k-1] - lowers[k-1]
-                            w = np.where(np.isinf(width), 0, width)
-                            base_cum[k] = base_cum[k-1] + w * rates[k-1]
-                            
-                        idx = np.searchsorted(lowers, y, side='right') - 1
-                        idx = np.clip(idx, 0, len(sch) - 1)
-                        mtr = rates[idx]
-                        
-                        base_tax = base_cum[idx] + (y - lowers[idx]) * mtr
-                        base_tax = np.maximum(base_tax, 0.0)
-                        
-                        nit_est = np.where(y >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
-                        
-                        etr = np.zeros_like(y)
-                        mask = y > 0
-                        etr[mask] = nit_est[mask] / y[mask]
-                        
-                        detr = np.zeros_like(etr)
-                        
-                        # Calculate ΔETR respecting groups
-                        if 'Year' in group.columns and 'Type_Tax' in group.columns:
-                            for (gyear, gtax), sub_idx in group.groupby(['Year', 'Type_Tax']).groups.items():
-                                sub_y = y[sub_idx]
-                                sub_etr = etr[sub_idx]
-                                sub_detr = np.zeros_like(sub_etr)
-                                sub_detr[1:] = sub_etr[1:] - sub_etr[:-1]
-                                detr[sub_idx] = sub_detr
-                        else:
-                            detr[1:] = etr[1:] - etr[:-1]
-                        
-                        group['MTR'] = mtr
-                        group['BaseTax'] = base_tax
-                        group['NIT Estimated'] = nit_est
-                        group['ETR'] = etr
-                        group['ΔETR'] = detr
-                        
-                        st.dataframe(group)
-                        
-                        output = io.BytesIO()
-                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                            group.to_excel(writer, index=False)
-                        st.download_button(label=f"📥 Download {g_type} Computed Export",
-                                           data=output.getvalue(),
-                                           file_name=f"{g_type}_tax_output.xlsx",
-                                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                                           key=f"dl_{g_type}")
-                except Exception as e:
-                    st.error(f"Error computing dataset metrics internally: {e}")
