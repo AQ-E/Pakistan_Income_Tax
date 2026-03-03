@@ -44,22 +44,44 @@ st.title("PIT Reform Optimization Engine")
 st.markdown("---")
 
 # ───────────────────────── Data Loading ─────────────────────────
-slab_path, truth_path = get_data_paths()
+_, truth_path = get_data_paths()   # only truth_path (slabs) is used from system; obs require upload
 
-# Allow user to upload a fresh observations file via session state
-if 'uploaded_obs_bytes' in st.session_state and st.session_state.uploaded_obs_bytes is not None:
-    import tempfile, os
-    _tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.xlsx')
-    _tmp.write(st.session_state.uploaded_obs_bytes)
-    _tmp.close()
-    _obs_path = _tmp.name
-else:
-    _obs_path = slab_path
+# Check if user has uploaded the observations file
+_has_upload = 'uploaded_obs_bytes' in st.session_state and st.session_state.get('uploaded_obs_bytes') is not None
+
+if not _has_upload:
+    # Show friendly upload-only landing page — nothing else renders
+    st.markdown("""
+    <div style='text-align:center; padding:60px 20px;'>
+        <h2>📊 Upload Your Observations Data</h2>
+        <p style='color:#666; font-size:16px; max-width:520px; margin:auto;'>
+            Upload the <b>Income Tax Liability (S / NS / AOP)</b> Excel file to begin analysis.
+            The system will use internally stored slab rates and surcharge rules automatically.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    _up = st.file_uploader(
+        "📂 Upload Observations File (Income Tax Liability S‌/NS/AOP.xlsx)",
+        type=["xlsx", "xls"],
+        help="Required columns: Taxable Income Slab (Rs.), Year, Type_Tax, Number of Persons, Taxable Income (9100), Normal Income Tax (920000)"
+    )
+    if _up is not None:
+        st.session_state.uploaded_obs_bytes = _up.getvalue()
+        st.rerun()
+    st.stop()
+
+# — File is uploaded; write to a temp path and load —
+import tempfile as _tf
+_tmp = _tf.NamedTemporaryFile(delete=False, suffix='.xlsx')
+_tmp.write(st.session_state.uploaded_obs_bytes)
+_tmp.close()
+_obs_path = _tmp.name
 
 try:
     df_slabs_agg = load_slab_data(_obs_path)
 except Exception as e:
-    st.error(f"Error loading observations data: {e}")
+    st.error(f"❌ Could not read the uploaded file: {e}")
     st.stop()
 
 # ───────────────────────── Session State ─────────────────────────
@@ -195,22 +217,12 @@ except Exception as e:
 
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
-    # — Upload observations data —
-    st.header("📂 Upload Data")
-    _uploaded = st.file_uploader(
-        "Upload Observations File",
-        type=["xlsx", "xls"],
-        help="Upload your Income Tax Liability dataset (S/NS/AOP). Required columns: Taxable Income Slab (Rs.), Year, Type_Tax, Number of Persons, Taxable Income (9100), Normal Income Tax (920000)"
-    )
-    if _uploaded is not None:
-        st.session_state.uploaded_obs_bytes = _uploaded.getvalue()
-        st.success("✅ File loaded.")
+    # — File info & change option —
+    st.header("📂 Data File")
+    st.success("✅ Observations file loaded.")
+    if st.button("🔄 Remove / Change File"):
+        del st.session_state['uploaded_obs_bytes']
         st.rerun()
-
-    if 'uploaded_obs_bytes' in st.session_state and st.session_state.uploaded_obs_bytes:
-        st.info("📊 Using uploaded observations file.")
-    else:
-        st.caption("Using default system observations.")
 
     st.markdown("---")
     st.header("⚙️ Design Mode")
