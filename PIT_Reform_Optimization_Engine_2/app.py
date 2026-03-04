@@ -615,23 +615,78 @@ else:
             t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
             with t_ana:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
-                c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("Base NIT Estimated",     f"PKR {_nit_base/1e9:,.2f}B",
-                           help="NIT from current-law slabs applied to avg per-person income, multiplied by filer count. Filtered to selected year only.")
-                c2.metric("Proposed NIT Estimated", f"PKR {_nit_prop/1e9:,.2f}B", f"{_uplift_nit:+.2%}",
-                           help="Same but with proposed/lab slabs + surcharge + filer adjustment.")
 
-                total_filers = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
-                c3.metric("Number of filers", f"{total_filers:,}")
+                # ── Professional metric cards (no truncation) ─────────────────
+                total_filers   = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
+                _avg_etr_data  = _nit_base / _y_arr.sum() if _y_arr.sum() > 0 else 0.0
+                max_mtr        = max([s['rate'] for s in res['schedule_list']])
+                max_cetr       = m.get('band_max_jump', 0)
 
-                # Data-derived ETR = total NIT / total taxable income (weighted average, not grid)
-                _avg_etr_data = _nit_base / _y_arr.sum() if _y_arr.sum() > 0 else 0.0
-                c4.metric("Avg ETR", f"{_avg_etr_data:.2%}",
-                           help="Weighted average ETR = Base NIT Estimated / Total Taxable Income (from actual data)")
+                # Delta badge styling
+                _delta_color = "#16a34a" if _uplift_nit >= 0 else "#dc2626"
+                _delta_arrow = "▲" if _uplift_nit >= 0 else "▼"
+                _delta_html  = (f'<div style="margin-top:4px;font-size:0.78rem;font-weight:600;'
+                                f'color:{_delta_color}">{_delta_arrow} {_uplift_nit:+.2%}</div>')
 
-                max_mtr = max([s['rate'] for s in res['schedule_list']])
-                max_cetr = m.get('band_max_jump', 0)
-                c5.metric("MTR (Max) / CETR (Max)", f"{max_mtr:.2%} / {max_cetr:.2f}pp")
+                st.markdown(f"""
+<style>
+.metric-row {{
+    display: flex;
+    gap: 14px;
+    margin: 10px 0 18px 0;
+    flex-wrap: wrap;
+}}
+.metric-card {{
+    flex: 1;
+    min-width: 160px;
+    background: linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
+    border: 1px solid #334155;
+    border-radius: 12px;
+    padding: 16px 18px 14px 18px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
+}}
+.mc-label {{
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #94a3b8;
+    margin-bottom: 6px;
+}}
+.mc-value {{
+    font-size: 1.25rem;
+    font-weight: 700;
+    color: #f1f5f9;
+    white-space: nowrap;
+    overflow: visible;
+}}
+.mc-delta-pos {{ color:#22c55e; font-size:0.78rem; font-weight:600; margin-top:4px; }}
+.mc-delta-neg {{ color:#ef4444; font-size:0.78rem; font-weight:600; margin-top:4px; }}
+</style>
+<div class="metric-row">
+  <div class="metric-card">
+    <div class="mc-label">Base NIT Estimated</div>
+    <div class="mc-value">PKR {_nit_base/1e9:,.2f}B</div>
+  </div>
+  <div class="metric-card">
+    <div class="mc-label">Proposed NIT Estimated</div>
+    <div class="mc-value">PKR {_nit_prop/1e9:,.2f}B</div>
+    <div class="{'mc-delta-pos' if _uplift_nit >= 0 else 'mc-delta-neg'}">{_delta_arrow} {_uplift_nit:+.2%}</div>
+  </div>
+  <div class="metric-card">
+    <div class="mc-label">Number of Filers</div>
+    <div class="mc-value">{total_filers:,}</div>
+  </div>
+  <div class="metric-card">
+    <div class="mc-label">Avg ETR (Data-Weighted)</div>
+    <div class="mc-value">{_avg_etr_data:.2%}</div>
+  </div>
+  <div class="metric-card">
+    <div class="mc-label">MTR Max / CETR Max</div>
+    <div class="mc-value">{max_mtr:.1%} / {max_cetr:.2f}pp</div>
+  </div>
+</div>
+""", unsafe_allow_html=True)
 
                 st.markdown("---")
                 y_grid = m['y']
