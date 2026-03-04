@@ -529,12 +529,15 @@ else:
             # Scale back: NIT for the whole band = per-person NIT × N
             return (nit_pp * n_arr).sum()
 
-        # Load observation Y & N values for this g_type
+        # Load observation Y & N values for this g_type, filtered by selected_year
         _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
         _tgt        = _type_map.get(g_type, g_type)
         _raw        = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
         _grp        = _raw.copy() if g_type == 'Consolidated' else (
                       _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy())
+        # → Filter to selected year only (avoids double-counting multi-year data)
+        if 'Year' in _grp.columns:
+            _grp    = _grp[_grp['Year'] == selected_year].copy()
         _y_arr      = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
 
         # ── Robust filer count column detection ──────────────────────────────
@@ -597,14 +600,17 @@ else:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
                 c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Base NIT Estimated",     f"PKR {_nit_base/1e9:,.2f}B",
-                           help="NIT computed from current-law slabs applied to uploaded Y values")
+                           help="NIT from current-law slabs applied to avg per-person income, multiplied by filer count. Filtered to selected year only.")
                 c2.metric("Proposed NIT Estimated", f"PKR {_nit_prop/1e9:,.2f}B", f"{_uplift_nit:+.2%}",
-                           help="NIT computed from proposed/lab slabs applied to same Y values")
+                           help="Same but with proposed/lab slabs + surcharge + filer adjustment.")
 
-                total_filers = m.get('total_filers', res['agg_df']['total_filers'].sum())
-                c3.metric("Number of filers", f"{int(total_filers):,}")
+                total_filers = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
+                c3.metric("Number of filers", f"{total_filers:,}")
 
-                c4.metric("Avg ETR", f"{m.get('avg_etr', 0):.2%}")
+                # Data-derived ETR = total NIT / total taxable income (weighted average, not grid)
+                _avg_etr_data = _nit_base / _y_arr.sum() if _y_arr.sum() > 0 else 0.0
+                c4.metric("Avg ETR", f"{_avg_etr_data:.2%}",
+                           help="Weighted average ETR = Base NIT Estimated / Total Taxable Income (from actual data)")
 
                 max_mtr = max([s['rate'] for s in res['schedule_list']])
                 max_cetr = m.get('band_max_jump', 0)
@@ -639,6 +645,9 @@ else:
                     raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
                     grp_obs  = raw_obs.copy() if g_type == 'Consolidated' else (
                                raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy())
+                    # Filter to selected year only
+                    if 'Year' in grp_obs.columns:
+                        grp_obs = grp_obs[grp_obs['Year'] == selected_year].copy()
 
                     if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
                         # Sort by [Year, Type_Tax, Income] so within each Year×Type group
