@@ -495,140 +495,134 @@ with st.sidebar:
 
 # ───────────────────────── Main Dashboard ─────────────────────────
 if mode == "Policy Lab":
-    st.header(f"🧪 Policy Scenario Simulation — {lab_type}")
+    st.header(f"🧪 Policy Lab — {lab_type} Design")
 
-    top_t_ana, top_t_cmp, top_t_sim = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison", "🧪 Policy Simulation"])
-    with top_t_ana:
-        col_ctrl, col_dash = st.columns([1, 2.7])
-        with col_ctrl:
-            st.markdown("<h4 style='color:#003B5C;margin-top:0;'>⚙️ Scenario Controls</h4>", unsafe_allow_html=True)
+    # ─── Slab Editor ───
+    edited_df = st.data_editor(
+        st.session_state.lab_slabs,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "lower_bound":    st.column_config.NumberColumn("Lower Bound (PKR)", format="%d",    min_value=0),
+            "upper_bound":    st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
+            "marginal_rate":  st.column_config.NumberColumn("MTR (decimal)",      format="%.4f", min_value=0.0, max_value=1.0)
+        }
+    )
 
-            # ─── Slab Editor ───
-            edited_df = st.data_editor(
-                st.session_state.lab_slabs,
-                num_rows="dynamic",
-                use_container_width=True,
-                column_config={
-                    "lower_bound":    st.column_config.NumberColumn("Lower Bound (PKR)", format="%d",    min_value=0),
-                    "upper_bound":    st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
-                    "marginal_rate":  st.column_config.NumberColumn("MTR (decimal)",      format="%.4f", min_value=0.0, max_value=1.0)
-                }
-            )
+    # Robustly handle the last slab’s infinity
+    if not edited_df.empty:
+        edited_df = edited_df.sort_values('lower_bound').reset_index(drop=True)
+        last_idx = edited_df.index[-1]
+        val = edited_df.loc[last_idx, 'upper_bound']
+        if pd.isna(val) or val > 500_000_000 or val <= edited_df.loc[last_idx, 'lower_bound']:
+            edited_df.loc[last_idx, 'upper_bound'] = np.inf
+        for i in range(1, len(edited_df)):
+            edited_df.loc[i-1, 'upper_bound'] = edited_df.loc[i, 'lower_bound']
 
-            # Robustly handle the last slab’s infinity
-            if not edited_df.empty:
-                edited_df = edited_df.sort_values('lower_bound').reset_index(drop=True)
-                last_idx = edited_df.index[-1]
-                val = edited_df.loc[last_idx, 'upper_bound']
-                if pd.isna(val) or val > 500_000_000 or val <= edited_df.loc[last_idx, 'lower_bound']:
-                    edited_df.loc[last_idx, 'upper_bound'] = np.inf
-                for i in range(1, len(edited_df)):
-                    edited_df.loc[i-1, 'upper_bound'] = edited_df.loc[i, 'lower_bound']
+    st.session_state.lab_slabs = edited_df
 
-            st.session_state.lab_slabs = edited_df
+    # ─── Surcharge Editor (directly below slabs) ───
+    st.markdown("#### 📌 Surcharge Settings")
+    _sur_info_default = _get_truth_surcharge(lab_type)
+    _def_thresh = _sur_info_default.get('threshold', 0.0)
+    _def_rate   = _sur_info_default.get('rate', 0.0) * 100.0   # show as %
 
-            # ─── Surcharge Editor (directly below slabs) ───
-            st.markdown("#### 📌 Surcharge Settings")
-            _sur_info_default = _get_truth_surcharge(lab_type)
-            _def_thresh = _sur_info_default.get('threshold', 0.0)
-            _def_rate   = _sur_info_default.get('rate', 0.0) * 100.0   # show as %
+    # Load edited values from session state (persist across reruns)
+    _init_thresh = st.session_state.get('lab_sur_thresh', _def_thresh)
+    _init_rate   = st.session_state.get('lab_sur_rate',   _def_rate)
 
-            # Load edited values from session state (persist across reruns)
-            _init_thresh = st.session_state.get('lab_sur_thresh', _def_thresh)
-            _init_rate   = st.session_state.get('lab_sur_rate',   _def_rate)
+    sc1, sc2, sc3 = st.columns([2, 1, 1])
+    with sc1:
+        new_thresh = st.number_input(
+            "Surcharge Income Threshold (PKR)",
+            min_value=0.0, value=float(_init_thresh), step=500_000.0,
+            help="Surcharge applies only when Taxable Income ≥ this amount.",
+            key="sur_thresh_input"
+        )
+    with sc2:
+        new_rate = st.number_input(
+            "Surcharge Rate (%)",
+            min_value=0.0, max_value=100.0, value=float(_init_rate), step=1.0,
+            help="% added on top of normal tax for incomes above the threshold.",
+            key="sur_rate_input"
+        )
+    with sc3:
+        st.markdown("<br/>", unsafe_allow_html=True)  # vertical align
+        if st.button("🔄 Reset Surcharge"):
+            st.session_state['lab_sur_thresh'] = _def_thresh
+            st.session_state['lab_sur_rate']   = _def_rate
+            st.rerun()
 
-            sc1, sc2, sc3 = st.columns([2, 1, 1])
-            with sc1:
-                new_thresh = st.number_input(
-                    "Surcharge Income Threshold (PKR)",
-                    min_value=0.0, value=float(_init_thresh), step=500_000.0,
-                    help="Surcharge applies only when Taxable Income ≥ this amount.",
-                    key="sur_thresh_input"
-                )
-            with sc2:
-                new_rate = st.number_input(
-                    "Surcharge Rate (%)",
-                    min_value=0.0, max_value=100.0, value=float(_init_rate), step=1.0,
-                    help="% added on top of normal tax for incomes above the threshold.",
-                    key="sur_rate_input"
-                )
-            with sc3:
-                st.markdown("<br/>", unsafe_allow_html=True)  # vertical align
-                if st.button("🔄 Reset Surcharge"):
-                    st.session_state['lab_sur_thresh'] = _def_thresh
-                    st.session_state['lab_sur_rate']   = _def_rate
-                    st.rerun()
+    # Persist edited surcharge
+    st.session_state['lab_sur_thresh'] = new_thresh
+    st.session_state['lab_sur_rate']   = new_rate
 
-            # Persist edited surcharge
-            st.session_state['lab_sur_thresh'] = new_thresh
-            st.session_state['lab_sur_rate']   = new_rate
+    # Show a quick summary of the effective surcharge rule
+    if new_thresh > 0 and new_rate > 0:
+        st.caption(f"⚡ Surcharge active: **{new_rate:.1f}%** on normal tax for taxable income ≥ **PKR {new_thresh:,.0f}**")
+    else:
+        st.caption("⚡ No surcharge currently applied.")
 
-            # Show a quick summary of the effective surcharge rule
-            if new_thresh > 0 and new_rate > 0:
-                st.caption(f"⚡ Surcharge active: **{new_rate:.1f}%** on normal tax for taxable income ≥ **PKR {new_thresh:,.0f}**")
-            else:
-                st.caption("⚡ No surcharge currently applied.")
+    # Store effective surcharge so the results section can use it
+    _lab_sur = {'threshold': new_thresh, 'rate': new_rate / 100.0}
 
-            # Store effective surcharge so the results section can use it
-            _lab_sur = {'threshold': new_thresh, 'rate': new_rate / 100.0}
+    # ─── Filer Adjustment (same style as Surcharge Settings) ───
+    st.markdown("#### 👥 Filer Count Adjustment")
+    _def_filer_chg  = 0.0
+    _init_filer_chg = float(st.session_state.get('lab_filer_chg', _def_filer_chg))
 
-            # ─── Filer Adjustment (same style as Surcharge Settings) ───
-            st.markdown("#### 👥 Filer Count Adjustment")
-            _def_filer_chg  = 0.0
-            _init_filer_chg = float(st.session_state.get('lab_filer_chg', _def_filer_chg))
+    fa1, fa2 = st.columns([3, 1])
+    with fa1:
+        new_filer_chg = st.number_input(
+            "Change in Number of Filers (%)",
+            min_value=-100.0, max_value=500.0,
+            value=_init_filer_chg, step=1.0,
+            help="Type a % change. +10 means 10% more filers (scales aggregate income Y by ×1.10). -20 means 20% fewer filers.",
+            key="filer_chg_input"
+        )
+    with fa2:
+        st.markdown("<br/>", unsafe_allow_html=True)
+        if st.button("🔄 Reset Filers"):
+            st.session_state['lab_filer_chg'] = _def_filer_chg
+            st.rerun()
 
-            fa1, fa2 = st.columns([3, 1])
-            with fa1:
-                new_filer_chg = st.number_input(
-                    "Change in Number of Filers (%)",
-                    min_value=-100.0, max_value=500.0,
-                    value=_init_filer_chg, step=1.0,
-                    help="Type a % change. +10 means 10% more filers (scales aggregate income Y by ×1.10). -20 means 20% fewer filers.",
-                    key="filer_chg_input"
-                )
-            with fa2:
-                st.markdown("<br/>", unsafe_allow_html=True)
-                if st.button("🔄 Reset Filers"):
-                    st.session_state['lab_filer_chg'] = _def_filer_chg
-                    st.rerun()
+    # Persist
+    st.session_state['lab_filer_chg'] = new_filer_chg
+    _filer_scale = 1.0 + new_filer_chg / 100.0  # multiplier applied to Y
 
-            # Persist
-            st.session_state['lab_filer_chg'] = new_filer_chg
-            _filer_scale = 1.0 + new_filer_chg / 100.0  # multiplier applied to Y
+    if new_filer_chg != 0.0:
+        st.caption(f"👥 Filer count **{new_filer_chg:+.1f}%** → Y scaled by **×{_filer_scale:.3f}**")
+    else:
+        st.caption("👥 No filer adjustment applied.")
 
-            if new_filer_chg != 0.0:
-                st.caption(f"👥 Filer count **{new_filer_chg:+.1f}%** → Y scaled by **×{_filer_scale:.3f}**")
-            else:
-                st.caption("👥 No filer adjustment applied.")
+    # ─── Instant Recompute ───
+    if edited_df.empty:
+        st.warning("⚠️ Please add at least one tax slab.")
+        st.session_state.results = {}
+    else:
+        sch_list = _schedule_to_list(edited_df)
+        is_v, err = validate_schedule(sch_list)
+        if not is_v:
+            st.error(f"❌ Invalid Design: {err}")
+            st.session_state.results = {}
+        else:
+            y_grid = np.arange(0, 20_000_001, 100_000)
+            res = run_manual_simulation(sch_list, g_agg, y_grid, total_tax, base_list=base_list_calib)
+            res.update({'g_type': lab_type, 'elapsed': 0.0, 'base_slabs_df': base_slabs_raw,
+                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
+            st.session_state.results = {lab_type: res}
 
-            # ─── Instant Recompute ───
-            if edited_df.empty:
-                st.warning("⚠️ Please add at least one tax slab.")
-                st.session_state.results = {}
-            else:
-                sch_list = _schedule_to_list(edited_df)
-                is_v, err = validate_schedule(sch_list)
-                if not is_v:
-                    st.error(f"❌ Invalid Design: {err}")
-                    st.session_state.results = {}
-                else:
-                    y_grid = np.arange(0, 20_000_001, 100_000)
-                    res = run_manual_simulation(sch_list, g_agg, y_grid, total_tax, base_list=base_list_calib)
-                    res.update({'g_type': lab_type, 'elapsed': 0.0, 'base_slabs_df': base_slabs_raw,
-                                'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
-                    st.session_state.results = {lab_type: res}
-
-            # Button to Refine
-            if not edited_df.empty and st.button("🧙 Refine Within My Slab Structure"):
-                y_grid   = np.arange(0, 20_000_001, 100_000)
-                sch_list = _schedule_to_list(edited_df)
-                with st.spinner("Refining..."):
-                    res = optimize_schedule_constrained(g_agg, sch_list, total_tax * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
-                    res.update({'g_type': lab_type, 'elapsed': 0.1, 'base_slabs_df': base_slabs_raw,
-                                'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
-                    st.session_state.results = {lab_type: res}
-                    st.session_state.lab_slabs = res['schedule_df']
-                    st.rerun()
+    # Button to Refine
+    if not edited_df.empty and st.button("🧙 Refine Within My Slab Structure"):
+        y_grid   = np.arange(0, 20_000_001, 100_000)
+        sch_list = _schedule_to_list(edited_df)
+        with st.spinner("Refining..."):
+            res = optimize_schedule_constrained(g_agg, sch_list, total_tax * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
+            res.update({'g_type': lab_type, 'elapsed': 0.1, 'base_slabs_df': base_slabs_raw,
+                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
+            st.session_state.results = {lab_type: res}
+            st.session_state.lab_slabs = res['schedule_df']
+            st.rerun()
 
 # ───────────────────────── Display Results ─────────────────────────
 
@@ -742,195 +736,194 @@ else:
 
         _uplift_nit = (_nit_prop - _nit_base) / _nit_base if _nit_base > 0 else 0.0
 
-        def _render_metrics():
+        with tabs[i]:
             if _uplift_nit < -0.001:
                 st.warning(f"⚠️ **Proposed NIT below baseline** (PKR {_nit_prop/1e9:,.1f}B < PKR {_nit_base/1e9:,.1f}B)")
 
-            total_filers   = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
-            _delta_arrow   = "▲" if _uplift_nit >= 0 else "▼"
-            _delta_cls     = "imf-delta-pos" if _uplift_nit >= 0 else "imf-delta-neg"
+            t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
+            with t_ana:
+                st.markdown(f"""
+<div class="imf-section-tag">Analysis Results</div>
+<h3 style="margin-top:6px;">🏆 {g_type}</h3>
+""", unsafe_allow_html=True)
 
-            st.markdown(f'''
+                # ── IMF-style metric cards ─────────────────────────────────
+                total_filers   = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
+                _avg_etr_data  = _nit_base / _y_arr.sum() if _y_arr.sum() > 0 else 0.0
+                max_mtr        = max([s['rate'] for s in res['schedule_list']])
+                max_cetr       = m.get('band_max_jump', 0)
+                _delta_arrow   = "▲" if _uplift_nit >= 0 else "▼"
+                _delta_cls     = "imf-delta-pos" if _uplift_nit >= 0 else "imf-delta-neg"
+
+                st.markdown(f"""
 <div class="imf-metric-row">
-  <div class="imf-metric-card" style="background-color:#003B5C; color:white; border:none; border-radius:10px;">
-    <div class="imf-mc-label" style="color:#A0B3C1; letter-spacing:0.02em;">Base NIT Estimated<br/>(PKR Billions)</div>
-    <div class="imf-mc-value" style="color:white; font-size:1.8rem;">{_nit_base/1e9:,.0f}</div>
-    <div style="color:#A0B3C1; font-size:0.75rem; margin-top:2px;">PKR Billions</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Base NIT Estimated</div>
+    <div class="imf-mc-value">PKR {_nit_base/1e9:,.2f}B</div>
   </div>
-  <div class="imf-metric-card" style="background-color:#003B5C; color:white; border:none; border-radius:10px;">
-    <div class="imf-mc-label" style="color:#A0B3C1; letter-spacing:0.02em;">Proposed NIT Estimated<br/>(PKR Billions)</div>
-    <div class="imf-mc-value" style="color:#E58A63; font-size:1.8rem;">{_nit_prop/1e9:,.0f}</div>
-    <div style="color:#A0B3C1; font-size:0.75rem; margin-top:2px;">PKR Billions</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Proposed NIT Estimated</div>
+    <div class="imf-mc-value">PKR {_nit_prop/1e9:,.2f}B</div>
+    <div class="{_delta_cls}">{_delta_arrow} {_uplift_nit:+.2%}</div>
   </div>
-  <div class="imf-metric-card" style="border-radius:10px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div class="imf-mc-label" style="letter-spacing:0.02em;">Percentage Change in<br/>Revenue</div>
-    <div class="imf-mc-value" style="font-size:1.8rem; margin-top:10px; color:#003B5C;">{_uplift_nit:+.1%}</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Number of Filers</div>
+    <div class="imf-mc-value">{total_filers:,}</div>
   </div>
-  <div class="imf-metric-card" style="border-radius:10px; display:flex; flex-direction:column; justify-content:space-between;">
-    <div class="imf-mc-label" style="letter-spacing:0.02em;">Number of Filers<br/>&nbsp;</div>
-    <div class="imf-mc-value" style="font-size:1.8rem; margin-top:10px; color:#003B5C;">{total_filers/1e6:,.1f} Million</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Avg ETR (Data-Weighted)</div>
+    <div class="imf-mc-value">{_avg_etr_data:.2%}</div>
+  </div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">MTR Max / CETR Max</div>
+    <div class="imf-mc-value">{max_mtr:.1%} / {max_cetr:.2f}pp</div>
   </div>
 </div>
-''', unsafe_allow_html=True)
+""", unsafe_allow_html=True)
 
-        def _render_charts():
-            st.markdown("---")
-            y_grid = m['y']
-            cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
+                st.markdown("---")
+                y_grid = m['y']
+                etr_hist, detr_hist = {}, {}
+                cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
 
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                from src.viz import plot_revenue_contribution
-                fig_rev = plot_revenue_contribution(res['agg_df'], res['schedule_list'])
-                fig_rev.update_layout(title="Revenue by Income Slab", height=340, margin=dict(t=40, b=20, l=10, r=10), showlegend=False)
-                st.plotly_chart(fig_rev, use_container_width=True)
-            with c2:
-                from src.viz import plot_etr_curve
-                fig_curve = plot_etr_curve(m, bm, historical_benchmarks={}, title="ETR Progression Curve")
-                fig_curve.update_layout(height=340, margin=dict(t=40, b=20, l=10, r=10))
-                st.plotly_chart(fig_curve, use_container_width=True)
-            with c3:
-                fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
-                fig_detr.update_layout(title="ΔETR Spike Detection Chart", height=340, margin=dict(t=40, b=20, l=10, r=10))
-                st.plotly_chart(fig_detr, use_container_width=True)
-                
-            c4, c5, c6 = st.columns(3)
-            with c4:
-                import plotly.express as px
-                agg_df = res['agg_df']
-                fig_dist = px.bar(agg_df, x='band_label', y='number_of_persons', title="Distribution of Filers", 
-                                  color_discrete_sequence=['#003B5C'])
-                fig_dist.update_layout(height=340, margin=dict(t=40, b=20, l=10, r=10), plot_bgcolor='white', yaxis_title="Number of Taxpayers", xaxis_title="Income Group")
-                fig_dist.update_xaxes(showgrid=True, gridcolor='#E8EDF2')
-                fig_dist.update_yaxes(showgrid=True, gridcolor='#E8EDF2')
-                st.plotly_chart(fig_dist, use_container_width=True)
-            with c5:
                 fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
-                fig_etr.update_layout(title="Revenue Sensitivity Heatmap", height=340, margin=dict(t=40, b=20, l=10, r=10))
                 st.plotly_chart(fig_etr, use_container_width=True)
-            with c6:
-                from src.viz import plot_staircase_rates
-                fig_stairs = plot_staircase_rates(m, res['schedule_list'])
-                fig_stairs.update_layout(title="Marginal Tax Rate", height=340, margin=dict(t=40, b=20, l=10, r=10))
-                st.plotly_chart(fig_stairs, use_container_width=True)
 
-        def _render_comparison():
-            cb, cp = st.columns(2)
-            with cb:
-                st.subheader("🏛️ Current Law")
-                st.table(_fmt_table(res['base_slabs_df']))
-            with cp:
-                st.subheader("🧪 Proposed Design")
-                st.table(_fmt_table(res['schedule_df']))
-            st.subheader("🔄 Detailed Transition View")
-            st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
+                fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
+                st.plotly_chart(fig_detr, use_container_width=True)
 
-        def _render_observations():
-            st.markdown("#### 📊 Observation-Level Tax Metrics")
-            try:
-                # Use lab-edited surcharge if available, else system default
-                _sur = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type)
-                sur_thresh = _sur.get('threshold', 0.0)
-                sur_rate   = _sur.get('rate', 0.0)
+                # ─── Observation-level metrics using EDITED surcharge ───
+                try:
+                    # Use lab-edited surcharge if available, else system default
+                    _sur = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type)
+                    sur_thresh = _sur.get('threshold', 0.0)
+                    sur_rate   = _sur.get('rate', 0.0)
 
-                if sur_thresh > 0 and sur_rate > 0:
-                    st.info(f"⚡ **Surcharge applied:** {sur_rate:.1%} on normal tax for Taxable Income ≥ PKR {sur_thresh:,.0f}")
-                else:
-                    st.info("⚡ No surcharge applied.")
-
-                type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
-                tgt_raw  = type_mapping.get(g_type, g_type)
-                raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
-                grp_obs  = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
-                if 'Year' in grp_obs.columns:
-                    grp_obs = grp_obs[grp_obs['Year'] == selected_year].copy()
-
-                if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
-                    has_year  = 'Year'     in grp_obs.columns
-                    has_ttype = 'Type_Tax' in grp_obs.columns
-                    sort_cols = (["Year"] if has_year else []) + (["Type_Tax"] if has_ttype else []) + ["Taxable Income (9100)"]
-                    grp_obs = grp_obs.sort_values(by=sort_cols).reset_index(drop=True).copy()
-                    sch     = res['schedule_list']
-                    y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
-
-                    _nc   = _find_n_col(list(grp_obs.columns))
-                    n_obs = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
-
-                    n_safe   = np.where(n_obs > 0, n_obs, 1.0)
-                    y_pp     = y_obs / n_safe
-
-                    lowers   = np.array([s['lower'] for s in sch])
-                    rates    = np.array([s['rate']  for s in sch])
-                    uppers   = np.array([s['upper'] for s in sch])
-
-                    base_cum = np.zeros(len(sch))
-                    for k in range(1, len(sch)):
-                        w = uppers[k-1] - lowers[k-1]
-                        base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
-
-                    idx      = np.clip(np.searchsorted(lowers, y_pp, side='right') - 1, 0, len(sch)-1)
-                    mtr_obs  = rates[idx]
-                    base_tax_pp = np.maximum(base_cum[idx] + (y_pp - lowers[idx]) * mtr_obs, 0.0)
-                    base_tax = base_tax_pp * n_obs 
-
-                    nit_est  = np.where(y_pp >= sur_thresh, base_tax * (1.0 + sur_rate), base_tax)
-                    etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
-                    detr_obs = np.zeros(len(grp_obs))
-                    
-                    if has_year and has_ttype: group_keys = ['Year', 'Type_Tax']
-                    elif has_year: group_keys = ['Year']
-                    elif has_ttype: group_keys = ['Type_Tax']
-                    else: group_keys = None
-
-                    if group_keys:
-                        for _, sub_idx in grp_obs.groupby(group_keys, sort=False).groups.items():
-                            sub_idx_sorted = sorted(sub_idx) 
-                            sub_e = etr_obs[sub_idx_sorted]
-                            sub_d = np.zeros(len(sub_e))
-                            sub_d[1:] = sub_e[1:] - sub_e[:-1] 
-                            for j, orig_i in enumerate(sub_idx_sorted):
-                                detr_obs[orig_i] = sub_d[j]
+                    # Show which surcharge is in effect (informational banner)
+                    if sur_thresh > 0 and sur_rate > 0:
+                        st.info(f"⚡ **Surcharge applied:** {sur_rate:.1%} on normal tax for Taxable Income ≥ PKR {sur_thresh:,.0f}")
                     else:
-                        detr_obs[1:] = etr_obs[1:] - etr_obs[:-1] 
+                        st.info("⚡ No surcharge applied.")
 
-                    grp_obs['MTR']          = mtr_obs
-                    grp_obs['BaseTax']       = base_tax
-                    grp_obs['NIT Estimated'] = nit_est
-                    grp_obs['ETR']           = etr_obs
-                    grp_obs['ΔETR']          = detr_obs
+                    # Raw Type_Tax values: 'S', 'NS', 'AOP', 'NSC'
+                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
+                    tgt_raw  = type_mapping.get(g_type, g_type)
+                    raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
+                    grp_obs  = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
+                    # Filter to selected year only (Year + Type_Tax together)
+                    if 'Year' in grp_obs.columns:
+                        grp_obs = grp_obs[grp_obs['Year'] == selected_year].copy()
 
-                    st.dataframe(grp_obs, use_container_width=True)
+                    if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
+                        # Sort by [Year, Type_Tax, Income] so within each Year×Type group
+                        # rows are income-ascending — required for correct ΔETR = ETR_i - ETR_{i-1}
+                        has_year  = 'Year'     in grp_obs.columns
+                        has_ttype = 'Type_Tax' in grp_obs.columns
+                        sort_cols = (["Year"] if has_year else []) + \
+                                    (["Type_Tax"] if has_ttype else []) + \
+                                    ["Taxable Income (9100)"]
+                        grp_obs = grp_obs.sort_values(by=sort_cols).reset_index(drop=True).copy()
+                        sch     = res['schedule_list']
 
-                    import io
-                    output = io.BytesIO()
-                    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                        grp_obs.to_excel(writer, index=False)
-                    st.download_button(
-                        label=f"📥 Download {g_type} Computed Metrics",
-                        data=output.getvalue(),
-                        file_name=f"{g_type}_computed_metrics.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        key=f"dl_{g_type}"
-                    )
-            except Exception:
-                pass
+                        # ── MTR & BaseTax (spec §4A) ─────────────────────────────────
+                        # Per-person income = Y_aggregate / Number_of_Persons
+                        # BaseTax = Σ_{k=1}^{i-1}(UB_k-LB_k)*r_k + (Y_pp - LB_i)*r_i
+                        y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
 
+                        # Filer count column (same robust detection as above)
+                        _nc   = _find_n_col(list(grp_obs.columns))
+                        n_obs = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
 
-        if mode == "Policy Lab":
-            with col_dash:
-                _render_metrics()
-                _render_charts()
-            with top_t_cmp:
-                _render_comparison()
-            with top_t_sim:
-                _render_observations()
-        else:
-            with tabs[i]:
-                t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
-                with t_ana:
-                    st.markdown(f"<h3 style='margin-top:6px;'>🏆 {g_type}</h3>", unsafe_allow_html=True)
-                    _render_metrics()
-                    _render_charts()
-                    _render_observations()
-                with t_cmp:
-                    _render_comparison()
+                        # Per-person average income
+                        n_safe   = np.where(n_obs > 0, n_obs, 1.0)
+                        y_pp     = y_obs / n_safe
+
+                        lowers   = np.array([s['lower'] for s in sch])
+                        rates    = np.array([s['rate']  for s in sch])
+                        uppers   = np.array([s['upper'] for s in sch])
+
+                        # Precompute cumulative tax at the bottom of each slab
+                        base_cum = np.zeros(len(sch))
+                        for k in range(1, len(sch)):
+                            w = uppers[k-1] - lowers[k-1]
+                            base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
+
+                        # Find slab i such that LB_i <= Y_pp < UB_i
+                        idx      = np.clip(np.searchsorted(lowers, y_pp, side='right') - 1, 0, len(sch)-1)
+                        mtr_obs  = rates[idx]
+                        base_tax_pp = np.maximum(base_cum[idx] + (y_pp - lowers[idx]) * mtr_obs, 0.0)
+                        base_tax = base_tax_pp * n_obs   # scale back to band total
+
+                        # ── NIT Estimated (spec §4A surcharge) ───────────────────────
+                        # Surcharge checked against per-person income
+                        nit_est  = np.where(y_pp >= sur_thresh,
+                                            base_tax * (1.0 + sur_rate),
+                                            base_tax)
+
+                        # ── ETR (spec §4B): ETR = NIT_band / Y_aggregate ─────────────
+                        etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
+
+                        # ── ΔETR (spec §4C): within each Year×Type_Tax group ─────────
+                        # ΔETR_i = ETR_i - ETR_{i-1};  first row in each group = 0
+                        detr_obs = np.zeros(len(grp_obs))
+                        if has_year and has_ttype:
+                            group_keys = ['Year', 'Type_Tax']
+                        elif has_year:
+                            group_keys = ['Year']
+                        elif has_ttype:
+                            group_keys = ['Type_Tax']
+                        else:
+                            group_keys = None
+
+                        if group_keys:
+                            for _, sub_idx in grp_obs.groupby(group_keys, sort=False).groups.items():
+                                sub_idx_sorted = sorted(sub_idx)  # already income-sorted after reset_index
+                                sub_e = etr_obs[sub_idx_sorted]
+                                sub_d = np.zeros(len(sub_e))
+                                sub_d[1:] = sub_e[1:] - sub_e[:-1]  # first row stays 0
+                                for j, orig_i in enumerate(sub_idx_sorted):
+                                    detr_obs[orig_i] = sub_d[j]
+                        else:
+                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]  # global fallback
+
+                        grp_obs['MTR']          = mtr_obs
+                        grp_obs['BaseTax']       = base_tax
+                        grp_obs['NIT Estimated'] = nit_est
+                        grp_obs['ETR']           = etr_obs
+                        grp_obs['ΔETR']          = detr_obs
+
+                        st.markdown("---")
+                        st.markdown("#### 📊 Observation-Level Tax Metrics")
+                        st.dataframe(grp_obs, use_container_width=True)
+
+                        output = io.BytesIO()
+                        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+                            grp_obs.to_excel(writer, index=False)
+                        st.download_button(
+                            label=f"📥 Download {g_type} Computed Metrics",
+                            data=output.getvalue(),
+                            file_name=f"{g_type}_computed_metrics.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key=f"dl_{g_type}"
+                        )
+                except Exception:
+                    pass  # If obs metrics fail, heatmaps above still render fine
+
+                with st.expander("📈 Advanced Policy Charts"):
+                    ca, cb = st.columns(2)
+                    from src.viz import plot_staircase_rates, plot_revenue_contribution, plot_etr_curve
+                    with ca: st.plotly_chart(plot_staircase_rates(m, res['schedule_list']), use_container_width=True)
+                    with cb: st.plotly_chart(plot_revenue_contribution(res['agg_df'], res['schedule_list']), use_container_width=True)
+                    st.plotly_chart(plot_progressivity_slope(m, bm), use_container_width=True)
+                    st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks={}, title=f"{g_type} ETR Comparison"), use_container_width=True)
+
+            with t_cmp:
+                cb, cp = st.columns(2)
+                with cb:
+                    st.subheader("🏛️ Current Law")
+                    st.table(_fmt_table(res['base_slabs_df']))
+                with cp:
+                    st.subheader("🧪 Your Lab Design")
+                    st.table(_fmt_table(res['schedule_df']))
+                st.subheader("🔄 Detailed Transition View")
+                st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
