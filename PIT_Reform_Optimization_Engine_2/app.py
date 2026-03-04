@@ -802,8 +802,9 @@ else:
                     st.plotly_chart(fig_detr, use_container_width=True)
                 with cg4:
                     import plotly.express as px
-                    agg_df = res['agg_df']
-                    fig_dist = px.bar(agg_df, x='band_label', y='number_of_persons', title="Distribution of Filers", 
+                    agg_df = res['agg_df'].copy()
+                    agg_df['Slab'] = agg_df.apply(lambda r: f"{r['lower_bound']/1e6:.2f}M - {r['upper_bound']/1e6:.2f}M" if r['upper_bound'] < np.inf else f"{r['lower_bound']/1e6:.2f}M+", axis=1)
+                    fig_dist = px.bar(agg_df, x='Slab', y='total_filers', title="Distribution of Filers", 
                                       color_discrete_sequence=['#003B5C'])
                     fig_dist.update_layout(plot_bgcolor='white', yaxis_title="Number of Taxpayers", xaxis_title="Income Group")
                     fig_dist.update_xaxes(showgrid=True, gridcolor='#E8EDF2')

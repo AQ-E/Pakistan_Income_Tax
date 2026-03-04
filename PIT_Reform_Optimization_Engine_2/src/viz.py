@@ -330,10 +330,12 @@ def plot_revenue_contribution(agg_df, schedule_list, title="Normal Income Tax Co
             avg_y = row['taxable_income_9100'] / n
             t = compute_tax(schedule_list, np.array([avg_y]))[0]
             rev = t * n
+            ub = row.get('upper_bound', np.inf)
+            slab_label = f"{row['lower_bound']/1e6:.2f}M - {ub/1e6:.2f}M" if ub < np.inf else f"{row['lower_bound']/1e6:.2f}M+"
             rows.append({
-                'Slab': row.get('slab_id', 'N/A'),
+                'Slab': slab_label,
                 'Normal Income Tax (Billion PKR)': rev / 1e9,
-                'Income Range': f"{row['lower_bound']/1e6:.1f}M - {row.get('upper_bound', np.inf)/1e6:.1f}M"
+                'Income Range': slab_label
             })
     
     df_plot = pd.DataFrame(rows)
