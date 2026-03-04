@@ -522,32 +522,64 @@ else:
                                raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy())
 
                     if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
-                        sort_cols = ['Year', 'Taxable Income (9100)'] if 'Year' in grp_obs.columns else ['Taxable Income (9100)']
-                        grp_obs  = grp_obs.sort_values(by=sort_cols).copy()
-                        sch      = res['schedule_list']
+                        # Sort by [Year, Type_Tax, Income] so within each Year×Type group
+                        # rows are income-ascending — required for correct ΔETR = ETR_i - ETR_{i-1}
+                        has_year  = 'Year'     in grp_obs.columns
+                        has_ttype = 'Type_Tax' in grp_obs.columns
+                        sort_cols = (["Year"] if has_year else []) + \
+                                    (["Type_Tax"] if has_ttype else []) + \
+                                    ["Taxable Income (9100)"]
+                        grp_obs = grp_obs.sort_values(by=sort_cols).reset_index(drop=True).copy()
+                        sch     = res['schedule_list']
 
+                        # ── MTR & BaseTax (spec §4A) ──────────────────────────────────
+                        # BaseTax = Σ_{k=1}^{i-1} (UB_k - LB_k)*r_k  +  (Y - LB_i)*r_i
                         y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
                         lowers   = np.array([s['lower'] for s in sch])
                         rates    = np.array([s['rate']  for s in sch])
                         uppers   = np.array([s['upper'] for s in sch])
+
+                        # Precompute cumulative tax at the bottom of each slab
                         base_cum = np.zeros(len(sch))
                         for k in range(1, len(sch)):
                             w = uppers[k-1] - lowers[k-1]
-                            base_cum[k] = base_cum[k-1] + (0 if np.isinf(w) else w) * rates[k-1]
+                            base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
+
+                        # Find slab i such that LB_i <= Y < UB_i
                         idx      = np.clip(np.searchsorted(lowers, y_obs, side='right') - 1, 0, len(sch)-1)
                         mtr_obs  = rates[idx]
                         base_tax = np.maximum(base_cum[idx] + (y_obs - lowers[idx]) * mtr_obs, 0.0)
-                        nit_est  = np.where(y_obs >= sur_thresh, base_tax * (1 + sur_rate), base_tax)
+
+                        # ── NIT Estimated (spec §4A surcharge) ───────────────────────
+                        nit_est  = np.where(y_obs >= sur_thresh,
+                                            base_tax * (1.0 + sur_rate),
+                                            base_tax)
+
+                        # ── ETR (spec §4B) ────────────────────────────────────────────
                         etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
-                        detr_obs = np.zeros_like(etr_obs)
-                        if 'Year' in grp_obs.columns and 'Type_Tax' in grp_obs.columns:
-                            for _, sub_idx in grp_obs.groupby(['Year', 'Type_Tax']).groups.items():
-                                sub_e = etr_obs[sub_idx]
-                                sub_d = np.zeros_like(sub_e)
-                                sub_d[1:] = sub_e[1:] - sub_e[:-1]
-                                detr_obs[sub_idx] = sub_d
+
+                        # ── ΔETR (spec §4C): within each Year×Type_Tax group ─────────
+                        # ΔETR_i = ETR_i - ETR_{i-1};  first row in each group = 0
+                        detr_obs = np.zeros(len(grp_obs))
+                        if has_year and has_ttype:
+                            group_keys = ['Year', 'Type_Tax']
+                        elif has_year:
+                            group_keys = ['Year']
+                        elif has_ttype:
+                            group_keys = ['Type_Tax']
                         else:
-                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]
+                            group_keys = None
+
+                        if group_keys:
+                            for _, sub_idx in grp_obs.groupby(group_keys, sort=False).groups.items():
+                                sub_idx_sorted = sorted(sub_idx)  # already income-sorted after reset_index
+                                sub_e = etr_obs[sub_idx_sorted]
+                                sub_d = np.zeros(len(sub_e))
+                                sub_d[1:] = sub_e[1:] - sub_e[:-1]  # first row stays 0
+                                for j, orig_i in enumerate(sub_idx_sorted):
+                                    detr_obs[orig_i] = sub_d[j]
+                        else:
+                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]  # global fallback
 
                         grp_obs['MTR']          = mtr_obs
                         grp_obs['BaseTax']       = base_tax
