@@ -740,7 +740,7 @@ else:
             if _uplift_nit < -0.001:
                 st.warning(f"⚠️ **Proposed NIT below baseline** (PKR {_nit_prop/1e9:,.1f}B < PKR {_nit_base/1e9:,.1f}B)")
 
-            t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
+            t_dash, t_ana, t_cmp = st.tabs(["📈 Dashboard", "📊 ETR & CETR Heat Maps", "📋 Schedule Comparison"])
             with t_ana:
                 st.markdown(f"""
 <div class="imf-section-tag">Analysis Results</div>
@@ -783,59 +783,33 @@ else:
 
                 st.markdown("---")
                 y_grid = m['y']
-                etr_hist, detr_hist = {}, {}
                 cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
 
-                cg1, cg2 = st.columns(2)
-                with cg1:
-                    fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
-                    st.plotly_chart(fig_etr, use_container_width=True)
-                with cg2:
-                    from src.viz import plot_revenue_contribution
-                    fig_rev = plot_revenue_contribution(res['agg_df'], res['schedule_list'])
-                    fig_rev.update_layout(title="Revenue by Income Slab")
-                    st.plotly_chart(fig_rev, use_container_width=True)
+                fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
+                st.plotly_chart(fig_etr, use_container_width=True)
 
-                cg3, cg4 = st.columns(2)
-                with cg3:
-                    fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
-                    st.plotly_chart(fig_detr, use_container_width=True)
-                with cg4:
-                    import plotly.express as px
-                    agg_df = res['agg_df'].copy()
-                    agg_df['Slab'] = agg_df.apply(lambda r: f"{r['lower_bound']/1e6:.2f}M - {r['upper_bound']/1e6:.2f}M" if r['upper_bound'] < np.inf else f"{r['lower_bound']/1e6:.2f}M+", axis=1)
-                    fig_dist = px.bar(agg_df, x='Slab', y='total_filers', title="Distribution of Filers", 
-                                      color_discrete_sequence=['#003B5C'])
-                    fig_dist.update_layout(plot_bgcolor='white', yaxis_title="Number of Taxpayers", xaxis_title="Income Group")
-                    fig_dist.update_xaxes(showgrid=True, gridcolor='#E8EDF2')
-                    fig_dist.update_yaxes(showgrid=True, gridcolor='#E8EDF2')
-                    st.plotly_chart(fig_dist, use_container_width=True)
+                fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
+                st.plotly_chart(fig_detr, use_container_width=True)
 
                 # ─── Observation-level metrics using EDITED surcharge ───
                 try:
-                    # Use lab-edited surcharge if available, else system default
                     _sur = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type)
                     sur_thresh = _sur.get('threshold', 0.0)
                     sur_rate   = _sur.get('rate', 0.0)
 
-                    # Show which surcharge is in effect (informational banner)
                     if sur_thresh > 0 and sur_rate > 0:
                         st.info(f"⚡ **Surcharge applied:** {sur_rate:.1%} on normal tax for Taxable Income ≥ PKR {sur_thresh:,.0f}")
                     else:
                         st.info("⚡ No surcharge applied.")
 
-                    # Raw Type_Tax values: 'S', 'NS', 'AOP', 'NSC'
                     type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
                     tgt_raw  = type_mapping.get(g_type, g_type)
                     raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
                     grp_obs  = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
-                    # Filter to selected year only (Year + Type_Tax together)
                     if 'Year' in grp_obs.columns:
                         grp_obs = grp_obs[grp_obs['Year'] == selected_year].copy()
 
                     if not grp_obs.empty and 'Taxable Income (9100)' in grp_obs.columns:
-                        # Sort by [Year, Type_Tax, Income] so within each Year×Type group
-                        # rows are income-ascending — required for correct ΔETR = ETR_i - ETR_{i-1}
                         has_year  = 'Year'     in grp_obs.columns
                         has_ttype = 'Type_Tax' in grp_obs.columns
                         sort_cols = (["Year"] if has_year else []) + \
@@ -844,16 +818,9 @@ else:
                         grp_obs = grp_obs.sort_values(by=sort_cols).reset_index(drop=True).copy()
                         sch     = res['schedule_list']
 
-                        # ── MTR & BaseTax (spec §4A) ─────────────────────────────────
-                        # Per-person income = Y_aggregate / Number_of_Persons
-                        # BaseTax = Σ_{k=1}^{i-1}(UB_k-LB_k)*r_k + (Y_pp - LB_i)*r_i
                         y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
-
-                        # Filer count column (same robust detection as above)
                         _nc   = _find_n_col(list(grp_obs.columns))
                         n_obs = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
-
-                        # Per-person average income
                         n_safe   = np.where(n_obs > 0, n_obs, 1.0)
                         y_pp     = y_obs / n_safe
 
@@ -861,29 +828,20 @@ else:
                         rates    = np.array([s['rate']  for s in sch])
                         uppers   = np.array([s['upper'] for s in sch])
 
-                        # Precompute cumulative tax at the bottom of each slab
                         base_cum = np.zeros(len(sch))
                         for k in range(1, len(sch)):
                             w = uppers[k-1] - lowers[k-1]
                             base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
 
-                        # Find slab i such that LB_i <= Y_pp < UB_i
                         idx      = np.clip(np.searchsorted(lowers, y_pp, side='right') - 1, 0, len(sch)-1)
                         mtr_obs  = rates[idx]
                         base_tax_pp = np.maximum(base_cum[idx] + (y_pp - lowers[idx]) * mtr_obs, 0.0)
-                        base_tax = base_tax_pp * n_obs   # scale back to band total
+                        base_tax = base_tax_pp * n_obs
 
-                        # ── NIT Estimated (spec §4A surcharge) ───────────────────────
-                        # Surcharge checked against per-person income
                         nit_est  = np.where(y_pp >= sur_thresh,
                                             base_tax * (1.0 + sur_rate),
                                             base_tax)
-
-                        # ── ETR (spec §4B): ETR = NIT_band / Y_aggregate ─────────────
                         etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
-
-                        # ── ΔETR (spec §4C): within each Year×Type_Tax group ─────────
-                        # ΔETR_i = ETR_i - ETR_{i-1};  first row in each group = 0
                         detr_obs = np.zeros(len(grp_obs))
                         if has_year and has_ttype:
                             group_keys = ['Year', 'Type_Tax']
@@ -896,14 +854,14 @@ else:
 
                         if group_keys:
                             for _, sub_idx in grp_obs.groupby(group_keys, sort=False).groups.items():
-                                sub_idx_sorted = sorted(sub_idx)  # already income-sorted after reset_index
+                                sub_idx_sorted = sorted(sub_idx)
                                 sub_e = etr_obs[sub_idx_sorted]
                                 sub_d = np.zeros(len(sub_e))
-                                sub_d[1:] = sub_e[1:] - sub_e[:-1]  # first row stays 0
+                                sub_d[1:] = sub_e[1:] - sub_e[:-1]
                                 for j, orig_i in enumerate(sub_idx_sorted):
                                     detr_obs[orig_i] = sub_d[j]
                         else:
-                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]  # global fallback
+                            detr_obs[1:] = etr_obs[1:] - etr_obs[:-1]
 
                         grp_obs['MTR']          = mtr_obs
                         grp_obs['BaseTax']       = base_tax
@@ -926,14 +884,73 @@ else:
                             key=f"dl_{g_type}"
                         )
                 except Exception:
-                    pass  # If obs metrics fail, heatmaps above still render fine
+                    pass
 
-                with st.expander("📈 Advanced Policy Charts"):
-                    ca, cb = st.columns(2)
-                    from src.viz import plot_staircase_rates, plot_etr_curve
-                    with ca: st.plotly_chart(plot_staircase_rates(m, res['schedule_list']), use_container_width=True)
-                    with cb: st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks={}, title=f"{g_type} ETR Comparison"), use_container_width=True)
-                    st.plotly_chart(plot_progressivity_slope(m, bm), use_container_width=True)
+            with t_dash:
+                from src.viz import plot_revenue_contribution, plot_staircase_rates, plot_etr_curve
+                import plotly.express as px
+
+                _agg = res['agg_df'].copy()
+                _agg['Slab'] = _agg.apply(
+                    lambda r: f"{r['lower_bound']/1e6:.2f}M - {r['upper_bound']/1e6:.2f}M"
+                    if r['upper_bound'] < np.inf else f"{r['lower_bound']/1e6:.2f}M+", axis=1)
+
+                _chart_bg = dict(plot_bgcolor='white', paper_bgcolor='white')
+                _grid_x   = dict(showgrid=True, gridcolor='#E8EDF2')
+                _grid_y   = dict(showgrid=True, gridcolor='#E8EDF2')
+                _margin   = dict(margin=dict(t=45, b=30, l=30, r=10))
+
+                # Row 1
+                dc1, dc2, dc3 = st.columns(3)
+                with dc1:
+                    fig_rev = plot_revenue_contribution(res['agg_df'], res['schedule_list'])
+                    fig_rev.update_layout(title="Revenue by Income Slab", height=320, **_chart_bg, **_margin)
+                    fig_rev.update_xaxes(**_grid_x)
+                    fig_rev.update_yaxes(**_grid_y)
+                    st.plotly_chart(fig_rev, use_container_width=True)
+                with dc2:
+                    fig_etrc = plot_etr_curve(m, bm, historical_benchmarks={}, title="ETR Progression Curve")
+                    fig_etrc.update_layout(height=320, **_margin)
+                    st.plotly_chart(fig_etrc, use_container_width=True)
+                with dc3:
+                    # ΔETR bar chart (spike detection as bar)
+                    _detr_agg = _agg.copy()
+                    _y_all = m['y']
+                    _detr_all = m['delta_etr']
+                    # Sample at slab boundaries
+                    _lbs = [s['lower'] for s in res['schedule_list']]
+                    _detr_vals = []
+                    for lb in _lbs:
+                        idx_d = np.searchsorted(_y_all, lb)
+                        _detr_vals.append(float(_detr_all[min(idx_d, len(_detr_all)-1)]))
+                    _detr_df = pd.DataFrame({'Slab': [f"{lb/1e6:.1f}M" for lb in _lbs], 'ΔETR (pp)': _detr_vals})
+                    fig_detr_bar = px.bar(_detr_df, x='Slab', y='ΔETR (pp)', title="ΔETR Spike Detection",
+                                          color='ΔETR (pp)', color_continuous_scale='Oranges')
+                    fig_detr_bar.update_layout(height=320, **_chart_bg, **_margin)
+                    fig_detr_bar.update_xaxes(**_grid_x)
+                    fig_detr_bar.update_yaxes(**_grid_y)
+                    st.plotly_chart(fig_detr_bar, use_container_width=True)
+
+                # Row 2
+                dc4, dc5, dc6 = st.columns(3)
+                with dc4:
+                    fig_dist = px.bar(_agg, x='Slab', y='total_filers', title="Distribution of Filers",
+                                      color_discrete_sequence=['#003B5C'])
+                    fig_dist.update_layout(height=320, yaxis_title="Number of Taxpayers",
+                                           xaxis_title="Income Group", **_chart_bg, **_margin)
+                    fig_dist.update_xaxes(**_grid_x)
+                    fig_dist.update_yaxes(**_grid_y)
+                    st.plotly_chart(fig_dist, use_container_width=True)
+                with dc5:
+                    fig_etr_hm = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']),
+                                                  colorscale='Blues')
+                    fig_etr_hm.update_layout(title="Revenue Sensitivity Heatmap", height=320,
+                                             **_chart_bg, **_margin)
+                    st.plotly_chart(fig_etr_hm, use_container_width=True)
+                with dc6:
+                    fig_stairs = plot_staircase_rates(m, res['schedule_list'])
+                    fig_stairs.update_layout(title="MTR vs ETR Staircase", height=320, **_margin)
+                    st.plotly_chart(fig_stairs, use_container_width=True)
 
             with t_cmp:
                 cb, cp = st.columns(2)
