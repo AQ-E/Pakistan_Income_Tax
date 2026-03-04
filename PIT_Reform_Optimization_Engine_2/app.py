@@ -99,8 +99,10 @@ _TYPE_CANON = {
     'non salaried':  'Non-Salaried',
     'non-salaried':  'Non-Salaried',
     'aop':           'AOP',
-    'nsc':           'Consolidated',   # NSC = Non-Salaried Consolidated = Consolidated
-    'consolidated':  'Consolidated',
+    'nsc':           'NSC',          # raw label in Excel
+    'consolidated':  'NSC',          # treat consolidated as NSC
+    'non_salaried':  'Non-Salaried',
+    'non salaried consolidated': 'NSC',
 }
 
 def _canon_type(raw):
@@ -278,7 +280,7 @@ with st.sidebar:
         run_sal = st.checkbox("Optimize Salaried", value=True)
         run_nsal = st.checkbox("Optimize Non-Salaried", value=True)
         run_aop = st.checkbox("Optimize AOP", value=True)
-        run_cons = st.checkbox("Optimize Consolidated", value=False)
+        run_cons = st.checkbox("Optimize NSC", value=False)
         
         if st.button("🚀 Auto-Optimize Policy", type="primary"):
             st.session_state.results = {}
@@ -287,7 +289,7 @@ with st.sidebar:
             if run_sal: groups.append('Salaried')
             if run_nsal: groups.append('Non-Salaried')
             if run_aop: groups.append('AOP')
-            if run_cons: groups.append('Consolidated')
+            if run_cons: groups.append('NSC')
 
             for g_type in groups:
                 df_slabs_agg['_norm'] = df_slabs_agg['taxpayer_type'].apply(_norm)
@@ -311,9 +313,8 @@ with st.sidebar:
 
     else:  # Policy Lab — this runs when mode != "Auto Optimize"
         st.markdown("### Policy Lab Setup")
-        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "Consolidated (NSC)"])
-        # Map display name to internal canonical name
-        lab_type = 'Consolidated' if lab_type == 'Consolidated (NSC)' else lab_type
+        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "NSC"])
+        # NSC is stored directly as 'NSC' — no remapping needed
 
         
         # Track active lab type to handle switching
@@ -529,16 +530,17 @@ else:
             # Scale back: NIT for the whole band = per-person NIT × N
             return (nit_pp * n_arr).sum()
 
-        # Load observation Y & N values for this g_type, filtered by selected_year
-        _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
+        # Load observation Y & N values for this g_type, filtered by year+type
+        # Raw Type_Tax values in uploaded file: 'S', 'NS', 'AOP', 'NSC'
+        _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
         _tgt        = _type_map.get(g_type, g_type)
         _raw        = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
-        _grp        = _raw.copy() if g_type == 'Consolidated' else (
-                      _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy())
-        # → Filter to selected year only (avoids double-counting multi-year data)
+        # Filter by Type_Tax
+        _grp = _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy()
+        # Filter by Year (avoids double-counting multi-year data)
         if 'Year' in _grp.columns:
-            _grp    = _grp[_grp['Year'] == selected_year].copy()
-        _y_arr      = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
+            _grp = _grp[_grp['Year'] == selected_year].copy()
+        _y_arr = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
 
         # ── Robust filer count column detection ──────────────────────────────
         def _find_n_col(cols):
@@ -640,12 +642,12 @@ else:
                     else:
                         st.info("⚡ No surcharge applied.")
 
-                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
+                    # Raw Type_Tax values: 'S', 'NS', 'AOP', 'NSC'
+                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
                     tgt_raw  = type_mapping.get(g_type, g_type)
                     raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
-                    grp_obs  = raw_obs.copy() if g_type == 'Consolidated' else (
-                               raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy())
-                    # Filter to selected year only
+                    grp_obs  = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
+                    # Filter to selected year only (Year + Type_Tax together)
                     if 'Year' in grp_obs.columns:
                         grp_obs = grp_obs[grp_obs['Year'] == selected_year].copy()
 
