@@ -468,25 +468,64 @@ else:
     for i, g_type in enumerate(tab_labels):
         res = results[g_type]
         m, bm = res['metrics'], compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
-        rev, base_rev = m['revenue'], res['base_revenue']
-        uplift = (rev - base_rev) / base_rev if base_rev > 0 else 0
-        
+
+        # ── Compute slab-formula NIT Estimated for base & proposed ──────────
+        def _nit_total(sch_list, y_arr, sur_thresh, sur_rate):
+            """Apply slab schedule + surcharge to array of Y values, return total NIT."""
+            lws  = np.array([s['lower'] for s in sch_list])
+            rs   = np.array([s['rate']  for s in sch_list])
+            ups  = np.array([s['upper'] for s in sch_list])
+            cum  = np.zeros(len(sch_list))
+            for k in range(1, len(sch_list)):
+                w = ups[k-1] - lws[k-1]
+                cum[k] = cum[k-1] + (0.0 if np.isinf(w) else w) * rs[k-1]
+            idx  = np.clip(np.searchsorted(lws, y_arr, side='right') - 1, 0, len(sch_list)-1)
+            bt   = np.maximum(cum[idx] + (y_arr - lws[idx]) * rs[idx], 0.0)
+            nit  = np.where(y_arr >= sur_thresh, bt * (1.0 + sur_rate), bt)
+            return nit.sum()
+
+        # Load observation Y values for this g_type
+        _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
+        _tgt        = _type_map.get(g_type, g_type)
+        _raw        = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
+        _grp        = _raw.copy() if g_type == 'Consolidated' else (
+                      _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy())
+        _y_arr      = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
+
+        # Surcharge: lab-edited if available, else system truth for selected year
+        _sur        = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type, selected_year)
+        _sur_th     = _sur.get('threshold', 0.0)
+        _sur_rt     = _sur.get('rate', 0.0)
+
+        # Base NIT Estimated  — truth slabs for selected year applied to Y
+        _base_sch   = _get_truth_slabs(g_type, selected_year)
+        _base_sch   = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
+        _base_sur   = _get_truth_surcharge(g_type, selected_year)   # always use truth surcharge for base
+        _nit_base   = _nit_total(_base_sch, _y_arr, _base_sur.get('threshold', 0.0), _base_sur.get('rate', 0.0)) if len(_y_arr) else 0.0
+
+        # Proposed NIT Estimated — proposed/lab slabs applied to same Y
+        _nit_prop   = _nit_total(res['schedule_list'], _y_arr, _sur_th, _sur_rt) if len(_y_arr) else 0.0
+
+        _uplift_nit = (_nit_prop - _nit_base) / _nit_base if _nit_base > 0 else 0.0
+
         with tabs[i]:
-            if uplift < -0.001:
-                st.warning(f"⚠️ **Revenue below baseline** (PKR {rev/1e9:,.1f}B < PKR {base_rev/1e9:,.1f}B) — Policy Unsafe")
-            
+            if _uplift_nit < -0.001:
+                st.warning(f"⚠️ **Proposed NIT below baseline** (PKR {_nit_prop/1e9:,.1f}B < PKR {_nit_base/1e9:,.1f}B)")
+
             t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
             with t_ana:
                 st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
                 c1, c2, c3, c4, c5 = st.columns(5)
-                c1.metric("Base Normal Income Tax", f"PKR {base_rev/1e9:,.1f}B")
-                c2.metric("Prop Normal Income Tax", f"PKR {rev/1e9:,.1f}B", f"{uplift:+.2%}")
-                
+                c1.metric("Base NIT Estimated",     f"PKR {_nit_base/1e9:,.2f}B",
+                           help="NIT computed from current-law slabs applied to uploaded Y values")
+                c2.metric("Proposed NIT Estimated", f"PKR {_nit_prop/1e9:,.2f}B", f"{_uplift_nit:+.2%}",
+                           help="NIT computed from proposed/lab slabs applied to same Y values")
+
                 total_filers = m.get('total_filers', res['agg_df']['total_filers'].sum())
                 c3.metric("Number of filers", f"{int(total_filers):,}")
-                
+
                 c4.metric("Avg ETR", f"{m.get('avg_etr', 0):.2%}")
-                
+
                 max_mtr = max([s['rate'] for s in res['schedule_list']])
                 max_cetr = m.get('band_max_jump', 0)
                 c5.metric("MTR (Max) / CETR (Max)", f"{max_mtr:.2%} / {max_cetr:.2f}pp")
