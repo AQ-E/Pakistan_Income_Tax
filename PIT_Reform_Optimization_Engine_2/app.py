@@ -268,10 +268,12 @@ with st.sidebar:
     years_avail = sorted(df_slabs_agg['year'].unique(), reverse=True)
     selected_year = st.selectbox("Baseline Year", years_avail)
 
-    st.markdown("### Targets")
-    uplift_target = st.slider("Change in Revenue (%)", 0.0, 15.0, 0.0, 0.5)
+    uplift_target = 0.0  # Policy Lab has no revenue target; Auto Optimize sets this below
+
 
     if mode == "Auto Optimize":
+        st.markdown("### Targets")
+        uplift_target = st.slider("Change in Revenue (%)", 0.0, 15.0, 0.0, 0.5)
         st.markdown("### Scope")
         run_sal = st.checkbox("Optimize Salaried", value=True)
         run_nsal = st.checkbox("Optimize Non-Salaried", value=True)
