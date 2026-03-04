@@ -147,8 +147,23 @@ def load_truth_slabs(file_path):
     slabs      = {}   # {(year, type): DataFrame}
     surcharges = {}   # {(year, type): {'threshold': float, 'rate': float}}
 
+    # Inline canonical mapping — embedded here so ANY change busts the @st.cache_data
+    # cache (Streamlit only hashes the function's own bytecode, not global dicts)
+    _INLINE_CANON = {
+        'salaried':               'Salaried',
+        'non salaried':           'Non-Salaried',
+        'non-salaried':           'Non-Salaried',
+        'non_salaried':           'Non-Salaried',
+        'aop':                    'AOP',
+        'nsc':                    'NSC',          # Non-Salaried Consolidated
+        'consolidated':           'NSC',
+        'non salaried consolidated': 'NSC',
+    }
+    def _local_canon(raw):
+        return _INLINE_CANON.get(str(raw).strip().lower(), str(raw).strip().title())
+
     for (year, raw_ttype), g in df.groupby(['Year', 'Tax_Type']):
-        ttype = _canon_type(raw_ttype)   # e.g. 'NSC' -> 'Consolidated'
+        ttype = _local_canon(raw_ttype)   # e.g. 'NSC' -> 'NSC', 'Non_salaried' -> 'Non-Salaried'
         key   = (int(year), ttype)
 
         g_slabs  = []
