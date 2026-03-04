@@ -900,25 +900,33 @@ else:
                 _grid_y   = dict(showgrid=True, gridcolor='#E8EDF2')
                 _margin   = dict(margin=dict(t=45, b=30, l=30, r=10))
 
-                # Row 1
-                dc1, dc2, dc3 = st.columns(3)
+                # Row 1 — 2 charts
+                dc1, dc2 = st.columns(2)
                 with dc1:
                     fig_rev = plot_revenue_contribution(res['agg_df'], res['schedule_list'])
-                    fig_rev.update_layout(title="Revenue by Income Slab", height=320, **_chart_bg, **_margin)
+                    fig_rev.update_layout(title="Revenue by Income Slab", height=350, **_chart_bg, **_margin)
                     fig_rev.update_xaxes(**_grid_x)
                     fig_rev.update_yaxes(**_grid_y)
                     st.plotly_chart(fig_rev, use_container_width=True)
                 with dc2:
                     fig_etrc = plot_etr_curve(m, bm, historical_benchmarks={}, title="ETR Progression Curve")
-                    fig_etrc.update_layout(height=320, **_margin)
+                    fig_etrc.update_layout(height=350, **_margin)
                     st.plotly_chart(fig_etrc, use_container_width=True)
+
+                # Row 2 — 2 charts
+                dc3, dc4 = st.columns(2)
                 with dc3:
-                    # ΔETR bar chart (spike detection as bar)
-                    _detr_agg = _agg.copy()
-                    _y_all = m['y']
+                    fig_dist = px.bar(_agg, x='Slab', y='total_filers', title="Distribution of Filers",
+                                      color_discrete_sequence=['#003B5C'])
+                    fig_dist.update_layout(height=350, yaxis_title="Number of Taxpayers",
+                                           xaxis_title="Income Group", **_chart_bg, **_margin)
+                    fig_dist.update_xaxes(**_grid_x)
+                    fig_dist.update_yaxes(**_grid_y)
+                    st.plotly_chart(fig_dist, use_container_width=True)
+                with dc4:
+                    _y_all    = m['y']
                     _detr_all = m['delta_etr']
-                    # Sample at slab boundaries
-                    _lbs = [s['lower'] for s in res['schedule_list']]
+                    _lbs      = [s['lower'] for s in res['schedule_list']]
                     _detr_vals = []
                     for lb in _lbs:
                         idx_d = np.searchsorted(_y_all, lb)
@@ -926,31 +934,10 @@ else:
                     _detr_df = pd.DataFrame({'Slab': [f"{lb/1e6:.1f}M" for lb in _lbs], 'ΔETR (pp)': _detr_vals})
                     fig_detr_bar = px.bar(_detr_df, x='Slab', y='ΔETR (pp)', title="ΔETR Spike Detection",
                                           color='ΔETR (pp)', color_continuous_scale='Oranges')
-                    fig_detr_bar.update_layout(height=320, **_chart_bg, **_margin)
+                    fig_detr_bar.update_layout(height=350, **_chart_bg, **_margin)
                     fig_detr_bar.update_xaxes(**_grid_x)
                     fig_detr_bar.update_yaxes(**_grid_y)
                     st.plotly_chart(fig_detr_bar, use_container_width=True)
-
-                # Row 2
-                dc4, dc5, dc6 = st.columns(3)
-                with dc4:
-                    fig_dist = px.bar(_agg, x='Slab', y='total_filers', title="Distribution of Filers",
-                                      color_discrete_sequence=['#003B5C'])
-                    fig_dist.update_layout(height=320, yaxis_title="Number of Taxpayers",
-                                           xaxis_title="Income Group", **_chart_bg, **_margin)
-                    fig_dist.update_xaxes(**_grid_x)
-                    fig_dist.update_yaxes(**_grid_y)
-                    st.plotly_chart(fig_dist, use_container_width=True)
-                with dc5:
-                    fig_etr_hm = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']),
-                                                  colorscale='Blues')
-                    fig_etr_hm.update_layout(title="Revenue Sensitivity Heatmap", height=320,
-                                             **_chart_bg, **_margin)
-                    st.plotly_chart(fig_etr_hm, use_container_width=True)
-                with dc6:
-                    fig_stairs = plot_staircase_rates(m, res['schedule_list'])
-                    fig_stairs.update_layout(title="MTR vs ETR Staircase", height=320, **_margin)
-                    st.plotly_chart(fig_stairs, use_container_width=True)
 
             with t_cmp:
                 cb, cp = st.columns(2)
