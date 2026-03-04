@@ -26,22 +26,151 @@ from src.viz import (build_heatmap_dataframe, plot_etr_heatmap,
                      plot_detr_heatmap, plot_etr_curve, plot_progressivity_slope)
 
 # ───────────────────────── Page Config ─────────────────────────
-st.set_page_config(page_title="PIT Reform Optimization Engine", layout="wide")
+st.set_page_config(page_title="PIT Reform Optimization Engine", layout="wide",
+                   page_icon="📊")
 
+# ── IMF / World Bank Professional Theme ────────────────────────
 st.markdown("""
 <style>
-.main { background-color: #f8f9fa; }
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+/* ── Global ── */
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+.main { background-color: #F5F7FA; }
+
+/* ── Top institutional header bar ── */
+.imf-header {
+    background: linear-gradient(90deg, #003B5C 0%, #00518B 60%, #0073AC 100%);
+    padding: 18px 32px 16px 32px;
+    border-radius: 0 0 8px 8px;
+    margin: -1rem -1rem 1.5rem -1rem;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    box-shadow: 0 3px 12px rgba(0,59,92,0.25);
+}
+.imf-header-title {
+    color: #FFFFFF;
+    font-size: 1.45rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+}
+.imf-header-sub {
+    color: #b3d4e8;
+    font-size: 0.78rem;
+    font-weight: 400;
+    margin: 2px 0 0 0;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+}
+
+/* ── Sidebar ── */
+section[data-testid="stSidebar"] {
+    background: #FFFFFF;
+    border-right: 1px solid #D1DCE5;
+}
+section[data-testid="stSidebar"] .element-container { padding: 0 4px; }
+
+/* ── Cards & panels ── */
 .stMetric {
     background-color: #ffffff;
     padding: 15px;
-    border-radius: 10px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    border-radius: 6px;
+    border-left: 4px solid #009FDA;
+    box-shadow: 0 1px 4px rgba(0,59,92,0.08);
+}
+div[data-testid="stMetricValue"] { color: #003B5C !important; font-weight: 700; }
+div[data-testid="stMetricLabel"] { color: #4A6B82 !important; font-size: 0.75rem !important; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+
+/* ── Buttons ── */
+button[kind="primary"], .stButton > button[data-testid="baseButton-primary"] {
+    background-color: #003B5C !important;
+    color: white !important;
+    border: none !important;
+    border-radius: 5px !important;
+    font-weight: 600 !important;
+}
+button[kind="primary"]:hover { background-color: #00518B !important; }
+
+/* ── Section headers ── */
+h1, h2, h3 { color: #003B5C; }
+h3 { border-bottom: 2px solid #009FDA; padding-bottom: 6px; }
+
+/* ── Data editor / tables ── */
+.stDataFrame { border: 1px solid #D1DCE5; border-radius: 6px; }
+thead th { background-color: #003B5C !important; color: #FFFFFF !important; font-size: 0.75rem !important; font-weight: 600 !important; }
+
+/* ── Tabs ── */
+.stTabs [data-baseweb="tab-list"] { border-bottom: 2px solid #D1DCE5; gap: 4px; }
+.stTabs [data-baseweb="tab"] { color: #4A6B82; font-weight: 500; border-radius: 4px 4px 0 0; }
+.stTabs [aria-selected="true"] { color: #003B5C !important; border-bottom: 2px solid #003B5C !important; font-weight: 700; }
+
+/* ── Expanders ── */
+details summary { color: #003B5C; font-weight: 600; }
+
+/* ── Info / Warning ── */
+.stAlert { border-radius: 6px; border-left: 4px solid #003B5C; }
+
+/* ── IMF Metric Cards ── */
+.imf-metric-row {
+    display: flex;
+    gap: 12px;
+    margin: 12px 0 20px 0;
+    flex-wrap: wrap;
+}
+.imf-metric-card {
+    flex: 1;
+    min-width: 155px;
+    background: #FFFFFF;
+    border-left: 4px solid #003B5C;
+    border-radius: 0 6px 6px 0;
+    padding: 14px 18px 12px 16px;
+    box-shadow: 0 1px 5px rgba(0,59,92,0.10);
+}
+.imf-mc-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    color: #4A6B82;
+    margin-bottom: 5px;
+}
+.imf-mc-value {
+    font-size: 1.22rem;
+    font-weight: 700;
+    color: #003B5C;
+    white-space: nowrap;
+}
+.imf-delta-pos { color: #16a34a; font-size: 0.76rem; font-weight: 600; margin-top: 3px; }
+.imf-delta-neg { color: #dc2626; font-size: 0.76rem; font-weight: 600; margin-top: 3px; }
+
+/* ── Section label ── */
+.imf-section-tag {
+    display: inline-block;
+    background: #003B5C;
+    color: #FFFFFF;
+    font-size: 0.65rem;
+    font-weight: 700;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    padding: 3px 10px;
+    border-radius: 3px;
+    margin-bottom: 10px;
 }
 </style>
 """, unsafe_allow_html=True)
 
-st.title("PIT Reform Optimization Engine")
-st.markdown("---")
+# ── Institutional Header ──────────────────────────────────────
+st.markdown("""
+<div class="imf-header">
+  <div>
+    <p class="imf-header-title">📊 PIT Reform Optimization Engine</p>
+    <p class="imf-header-sub">Pakistan Personal Income Tax · Policy Analysis &amp; Simulation Platform</p>
+  </div>
+</div>
+""", unsafe_allow_html=True)
+
 
 # ───────────────────────── Data Loading ─────────────────────────
 _, truth_path = get_data_paths()   # only truth_path (slabs) is used from system; obs require upload
@@ -614,76 +743,41 @@ else:
 
             t_ana, t_cmp = st.tabs(["📊 Analysis & Heatmaps", "📋 Schedule Comparison"])
             with t_ana:
-                st.markdown(f"### 🏆 {res['stage_selected']} Schedule — {g_type}")
+                st.markdown(f"""
+<div class="imf-section-tag">Analysis Results</div>
+<h3 style="margin-top:6px;">🏆 {res['stage_selected']} Schedule &mdash; {g_type}</h3>
+""", unsafe_allow_html=True)
 
-                # ── Professional metric cards (no truncation) ─────────────────
+                # ── IMF-style metric cards ─────────────────────────────────
                 total_filers   = int(_n_arr.sum()) if len(_n_arr) > 0 else m.get('total_filers', 0)
                 _avg_etr_data  = _nit_base / _y_arr.sum() if _y_arr.sum() > 0 else 0.0
                 max_mtr        = max([s['rate'] for s in res['schedule_list']])
                 max_cetr       = m.get('band_max_jump', 0)
-
-                # Delta badge styling
-                _delta_color = "#16a34a" if _uplift_nit >= 0 else "#dc2626"
-                _delta_arrow = "▲" if _uplift_nit >= 0 else "▼"
-                _delta_html  = (f'<div style="margin-top:4px;font-size:0.78rem;font-weight:600;'
-                                f'color:{_delta_color}">{_delta_arrow} {_uplift_nit:+.2%}</div>')
+                _delta_arrow   = "▲" if _uplift_nit >= 0 else "▼"
+                _delta_cls     = "imf-delta-pos" if _uplift_nit >= 0 else "imf-delta-neg"
 
                 st.markdown(f"""
-<style>
-.metric-row {{
-    display: flex;
-    gap: 14px;
-    margin: 10px 0 18px 0;
-    flex-wrap: wrap;
-}}
-.metric-card {{
-    flex: 1;
-    min-width: 160px;
-    background: linear-gradient(135deg,#1e293b 0%,#0f172a 100%);
-    border: 1px solid #334155;
-    border-radius: 12px;
-    padding: 16px 18px 14px 18px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-}}
-.mc-label {{
-    font-size: 0.72rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: #94a3b8;
-    margin-bottom: 6px;
-}}
-.mc-value {{
-    font-size: 1.25rem;
-    font-weight: 700;
-    color: #f1f5f9;
-    white-space: nowrap;
-    overflow: visible;
-}}
-.mc-delta-pos {{ color:#22c55e; font-size:0.78rem; font-weight:600; margin-top:4px; }}
-.mc-delta-neg {{ color:#ef4444; font-size:0.78rem; font-weight:600; margin-top:4px; }}
-</style>
-<div class="metric-row">
-  <div class="metric-card">
-    <div class="mc-label">Base NIT Estimated</div>
-    <div class="mc-value">PKR {_nit_base/1e9:,.2f}B</div>
+<div class="imf-metric-row">
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Base NIT Estimated</div>
+    <div class="imf-mc-value">PKR {_nit_base/1e9:,.2f}B</div>
   </div>
-  <div class="metric-card">
-    <div class="mc-label">Proposed NIT Estimated</div>
-    <div class="mc-value">PKR {_nit_prop/1e9:,.2f}B</div>
-    <div class="{'mc-delta-pos' if _uplift_nit >= 0 else 'mc-delta-neg'}">{_delta_arrow} {_uplift_nit:+.2%}</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Proposed NIT Estimated</div>
+    <div class="imf-mc-value">PKR {_nit_prop/1e9:,.2f}B</div>
+    <div class="{_delta_cls}">{_delta_arrow} {_uplift_nit:+.2%}</div>
   </div>
-  <div class="metric-card">
-    <div class="mc-label">Number of Filers</div>
-    <div class="mc-value">{total_filers:,}</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Number of Filers</div>
+    <div class="imf-mc-value">{total_filers:,}</div>
   </div>
-  <div class="metric-card">
-    <div class="mc-label">Avg ETR (Data-Weighted)</div>
-    <div class="mc-value">{_avg_etr_data:.2%}</div>
+  <div class="imf-metric-card">
+    <div class="imf-mc-label">Avg ETR (Data-Weighted)</div>
+    <div class="imf-mc-value">{_avg_etr_data:.2%}</div>
   </div>
-  <div class="metric-card">
-    <div class="mc-label">MTR Max / CETR Max</div>
-    <div class="mc-value">{max_mtr:.1%} / {max_cetr:.2f}pp</div>
+  <div class="imf-metric-card" style="border-left-color:#009FDA;">
+    <div class="imf-mc-label">MTR Max / CETR Max</div>
+    <div class="imf-mc-value">{max_mtr:.1%} / {max_cetr:.2f}pp</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
