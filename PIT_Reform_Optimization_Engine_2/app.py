@@ -536,10 +536,35 @@ else:
         _grp        = _raw.copy() if g_type == 'Consolidated' else (
                       _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy())
         _y_arr      = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
-        # Find the filer count column (flexible match)
-        _n_col      = next((c for c in _grp.columns if 'number' in c.lower() and
-                           any(x in c.lower() for x in ['person', 'filer'])), None)
-        _n_arr      = _grp[_n_col].values.astype(float) if _n_col else np.ones(len(_y_arr))
+
+        # ── Robust filer count column detection ──────────────────────────────
+        def _find_n_col(cols):
+            cl = [c.lower() for c in cols]
+            # Strategy 1: 'number' + 'person' or 'filer'
+            for orig, lo in zip(cols, cl):
+                if 'number' in lo and any(x in lo for x in ['person', 'filer']): return orig
+            # Strategy 2: 'no.' or 'no ' + 'person' or 'filer'
+            for orig, lo in zip(cols, cl):
+                if ('no.' in lo or lo.startswith('no ')) and any(x in lo for x in ['person', 'filer']): return orig
+            # Strategy 3: any column with 'persons' or 'filers' standalone
+            for orig, lo in zip(cols, cl):
+                if 'persons' in lo or 'filers' in lo: return orig
+            # Strategy 4: numeric column code 9300
+            for orig, lo in zip(cols, cl):
+                if '9300' in lo: return orig
+            return None
+
+        _n_col  = _find_n_col(list(_grp.columns))
+        _n_arr  = _grp[_n_col].values.astype(float) if _n_col else np.ones(len(_y_arr))
+
+        # Debug: show column detection result
+        with st.expander("🔍 Debug: Column Detection", expanded=False):
+            st.write("**All columns in uploaded file:**", list(_grp.columns))
+            st.write("**Filer count column detected:**", _n_col if _n_col else "❌ NOT FOUND — using N=1 (wrong!)")
+            if _n_col:
+                st.write("**Sample N values:**", _n_arr[:5])
+                st.write("**Sample Y values:**", _y_arr[:5])
+                st.write("**Sample Y/N (per-person income):**", (_y_arr[:5]/_n_arr[:5]))
 
         # Surcharge: lab-edited if available, else system truth for selected year
         _sur        = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type, selected_year)
@@ -631,10 +656,9 @@ else:
                         # BaseTax = Σ_{k=1}^{i-1}(UB_k-LB_k)*r_k + (Y_pp - LB_i)*r_i
                         y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
 
-                        # Filer count column (flexible match)
-                        _nc = next((c for c in grp_obs.columns if 'number' in c.lower() and
-                                    any(x in c.lower() for x in ['person','filer'])), None)
-                        n_obs    = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
+                        # Filer count column (same robust detection as above)
+                        _nc   = _find_n_col(list(grp_obs.columns))
+                        n_obs = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
 
                         # Per-person average income
                         n_safe   = np.where(n_obs > 0, n_obs, 1.0)
