@@ -786,11 +786,29 @@ else:
                 etr_hist, detr_hist = {}, {}
                 cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
 
-                fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
-                st.plotly_chart(fig_etr, use_container_width=True)
+                cg1, cg2 = st.columns(2)
+                with cg1:
+                    fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
+                    st.plotly_chart(fig_etr, use_container_width=True)
+                with cg2:
+                    from src.viz import plot_revenue_contribution
+                    fig_rev = plot_revenue_contribution(res['agg_df'], res['schedule_list'])
+                    fig_rev.update_layout(title="Revenue by Income Slab")
+                    st.plotly_chart(fig_rev, use_container_width=True)
 
-                fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
-                st.plotly_chart(fig_detr, use_container_width=True)
+                cg3, cg4 = st.columns(2)
+                with cg3:
+                    fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
+                    st.plotly_chart(fig_detr, use_container_width=True)
+                with cg4:
+                    import plotly.express as px
+                    agg_df = res['agg_df']
+                    fig_dist = px.bar(agg_df, x='band_label', y='number_of_persons', title="Distribution of Filers", 
+                                      color_discrete_sequence=['#003B5C'])
+                    fig_dist.update_layout(plot_bgcolor='white', yaxis_title="Number of Taxpayers", xaxis_title="Income Group")
+                    fig_dist.update_xaxes(showgrid=True, gridcolor='#E8EDF2')
+                    fig_dist.update_yaxes(showgrid=True, gridcolor='#E8EDF2')
+                    st.plotly_chart(fig_dist, use_container_width=True)
 
                 # ─── Observation-level metrics using EDITED surcharge ───
                 try:
@@ -911,11 +929,10 @@ else:
 
                 with st.expander("📈 Advanced Policy Charts"):
                     ca, cb = st.columns(2)
-                    from src.viz import plot_staircase_rates, plot_revenue_contribution, plot_etr_curve
+                    from src.viz import plot_staircase_rates, plot_etr_curve
                     with ca: st.plotly_chart(plot_staircase_rates(m, res['schedule_list']), use_container_width=True)
-                    with cb: st.plotly_chart(plot_revenue_contribution(res['agg_df'], res['schedule_list']), use_container_width=True)
+                    with cb: st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks={}, title=f"{g_type} ETR Comparison"), use_container_width=True)
                     st.plotly_chart(plot_progressivity_slope(m, bm), use_container_width=True)
-                    st.plotly_chart(plot_etr_curve(m, bm, historical_benchmarks={}, title=f"{g_type} ETR Comparison"), use_container_width=True)
 
             with t_cmp:
                 cb, cp = st.columns(2)
