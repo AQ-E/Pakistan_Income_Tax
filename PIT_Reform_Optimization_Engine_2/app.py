@@ -344,6 +344,7 @@ with st.sidebar:
             st.session_state.lab_slabs = None
             if 'lab_sur_thresh' in st.session_state: del st.session_state['lab_sur_thresh']
             if 'lab_sur_rate'   in st.session_state: del st.session_state['lab_sur_rate']
+            if 'lab_filer_chg'  in st.session_state: del st.session_state['lab_filer_chg']
             st.rerun()
 
         st.info("💡 **Policy Lab Guide**:\n- **Double-click** a cell to edit rates.\n- **Add Slabs**: Click the '+' at the bottom.\n- **Remove Slabs**: Select a row, press Delete.\n- **Final Slab**: Leave Upper Bound empty — treated as 'Above'.")
@@ -421,6 +422,35 @@ if mode == "Policy Lab":
     # Store effective surcharge so the results section can use it
     _lab_sur = {'threshold': new_thresh, 'rate': new_rate / 100.0}
 
+    # ─── Filer Adjustment (directly below surcharge) ───
+    st.markdown("#### 👥 Filer Count Adjustment")
+    _def_filer_chg = 0.0
+    _init_filer_chg = float(st.session_state.get('lab_filer_chg', _def_filer_chg))
+
+    fa1, fa2 = st.columns([3, 1])
+    with fa1:
+        new_filer_chg = st.slider(
+            "Change in Number of Filers (%)",
+            min_value=-50.0, max_value=100.0,
+            value=_init_filer_chg, step=1.0,
+            help="Scales aggregate taxable income (Y) proportionally. +10% means 10% more filers at the same avg income per filer.",
+            key="filer_chg_input"
+        )
+    with fa2:
+        st.markdown("<br/>", unsafe_allow_html=True)
+        if st.button("🔄 Reset Filers"):
+            st.session_state['lab_filer_chg'] = _def_filer_chg
+            st.rerun()
+
+    # Persist
+    st.session_state['lab_filer_chg'] = new_filer_chg
+    _filer_scale = 1.0 + new_filer_chg / 100.0  # multiplier applied to Y
+
+    if new_filer_chg != 0.0:
+        st.caption(f"👥 Filer count **{new_filer_chg:+.1f}%** → Y scaled by **×{_filer_scale:.3f}**")
+    else:
+        st.caption("👥 No filer adjustment applied.")
+
     # ─── Instant Recompute ───
     if edited_df.empty:
         st.warning("⚠️ Please add at least one tax slab.")
@@ -435,7 +465,7 @@ if mode == "Policy Lab":
             y_grid = np.arange(0, 20_000_001, 100_000)
             res = run_manual_simulation(sch_list, g_agg, y_grid, total_tax, base_list=base_list_calib)
             res.update({'g_type': lab_type, 'elapsed': 0.0, 'base_slabs_df': base_slabs_raw,
-                        'lab_surcharge': _lab_sur})
+                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
             st.session_state.results = {lab_type: res}
 
     # Button to Refine
@@ -445,7 +475,7 @@ if mode == "Policy Lab":
         with st.spinner("Refining..."):
             res = optimize_schedule_constrained(g_agg, sch_list, total_tax * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
             res.update({'g_type': lab_type, 'elapsed': 0.1, 'base_slabs_df': base_slabs_raw,
-                        'lab_surcharge': _lab_sur})
+                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
             st.session_state.results = {lab_type: res}
             st.session_state.lab_slabs = res['schedule_df']
             st.rerun()
@@ -497,14 +527,18 @@ else:
         _sur_th     = _sur.get('threshold', 0.0)
         _sur_rt     = _sur.get('rate', 0.0)
 
-        # Base NIT Estimated  — truth slabs for selected year applied to Y
+        # Filer scale: only applied to proposed (base always uses original Y)
+        _filer_scale = res.get('lab_filer_scale', 1.0)
+        _y_arr_prop  = _y_arr * _filer_scale   # scaled Y for proposed NIT
+
+        # Base NIT Estimated  — truth slabs for selected year applied to original Y
         _base_sch   = _get_truth_slabs(g_type, selected_year)
         _base_sch   = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
-        _base_sur   = _get_truth_surcharge(g_type, selected_year)   # always use truth surcharge for base
+        _base_sur   = _get_truth_surcharge(g_type, selected_year)
         _nit_base   = _nit_total(_base_sch, _y_arr, _base_sur.get('threshold', 0.0), _base_sur.get('rate', 0.0)) if len(_y_arr) else 0.0
 
-        # Proposed NIT Estimated — proposed/lab slabs applied to same Y
-        _nit_prop   = _nit_total(res['schedule_list'], _y_arr, _sur_th, _sur_rt) if len(_y_arr) else 0.0
+        # Proposed NIT Estimated — proposed slabs + filer scale applied to Y
+        _nit_prop   = _nit_total(res['schedule_list'], _y_arr_prop, _sur_th, _sur_rt) if len(_y_arr_prop) else 0.0
 
         _uplift_nit = (_nit_prop - _nit_base) / _nit_base if _nit_base > 0 else 0.0
 
