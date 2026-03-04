@@ -339,13 +339,21 @@ def plot_revenue_contribution(agg_df, schedule_list, title="Normal Income Tax Co
             })
     
     df_plot = pd.DataFrame(rows)
-    fig = px.bar(df_plot, x='Slab', y='Normal Income Tax (Billion PKR)', 
+    fig = px.bar(df_plot, x='Slab', y='Normal Income Tax (Billion PKR)',
                  hover_data=['Income Range'],
-                 color='Normal Income Tax (Billion PKR)',
-                 color_continuous_scale='Blues',
+                 color_discrete_sequence=['#003B5C'],
                  title=title)
-    
-    fig.update_layout(template='plotly_white', height=400)
+
+    fig.update_layout(
+        template='plotly_white',
+        height=400,
+        showlegend=False,
+        coloraxis_showscale=False,
+        plot_bgcolor='white',
+        paper_bgcolor='white',
+        xaxis=dict(showgrid=True, gridcolor='#E8EDF2'),
+        yaxis=dict(showgrid=True, gridcolor='#E8EDF2'),
+    )
     return fig
 
 
