@@ -500,8 +500,13 @@ else:
         m, bm = res['metrics'], compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
 
         # ── Compute slab-formula NIT Estimated for base & proposed ──────────
-        def _nit_total(sch_list, y_arr, sur_thresh, sur_rate):
-            """Apply slab schedule + surcharge to array of Y values, return total NIT."""
+        def _nit_total(sch_list, y_arr, n_arr, sur_thresh, sur_rate):
+            """NIT for aggregate-band data.
+            y_arr = aggregate taxable income per band row.
+            n_arr = number of persons per band row.
+            Computes per-person avg income, applies slabs, scales by N."""
+            if len(sch_list) == 0 or len(y_arr) == 0:
+                return 0.0
             lws  = np.array([s['lower'] for s in sch_list])
             rs   = np.array([s['rate']  for s in sch_list])
             ups  = np.array([s['upper'] for s in sch_list])
@@ -509,18 +514,32 @@ else:
             for k in range(1, len(sch_list)):
                 w = ups[k-1] - lws[k-1]
                 cum[k] = cum[k-1] + (0.0 if np.isinf(w) else w) * rs[k-1]
-            idx  = np.clip(np.searchsorted(lws, y_arr, side='right') - 1, 0, len(sch_list)-1)
-            bt   = np.maximum(cum[idx] + (y_arr - lws[idx]) * rs[idx], 0.0)
-            nit  = np.where(y_arr >= sur_thresh, bt * (1.0 + sur_rate), bt)
-            return nit.sum()
 
-        # Load observation Y values for this g_type
+            # Per-person average income
+            n_safe = np.where(n_arr > 0, n_arr, 1.0)
+            y_pp   = y_arr / n_safe   # per-person income
+
+            # Apply slabs to per-person income
+            idx    = np.clip(np.searchsorted(lws, y_pp, side='right') - 1, 0, len(sch_list)-1)
+            bt_pp  = np.maximum(cum[idx] + (y_pp - lws[idx]) * rs[idx], 0.0)
+
+            # Surcharge: checked against per-person income
+            nit_pp = np.where(y_pp >= sur_thresh, bt_pp * (1.0 + sur_rate), bt_pp)
+
+            # Scale back: NIT for the whole band = per-person NIT × N
+            return (nit_pp * n_arr).sum()
+
+        # Load observation Y & N values for this g_type
         _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'Consolidated': 'C'}
         _tgt        = _type_map.get(g_type, g_type)
         _raw        = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
         _grp        = _raw.copy() if g_type == 'Consolidated' else (
                       _raw[_raw['Type_Tax'] == _tgt].copy() if 'Type_Tax' in _raw.columns else _raw.copy())
         _y_arr      = _grp['Taxable Income (9100)'].values.astype(float) if 'Taxable Income (9100)' in _grp.columns else np.array([])
+        # Find the filer count column (flexible match)
+        _n_col      = next((c for c in _grp.columns if 'number' in c.lower() and
+                           any(x in c.lower() for x in ['person', 'filer'])), None)
+        _n_arr      = _grp[_n_col].values.astype(float) if _n_col else np.ones(len(_y_arr))
 
         # Surcharge: lab-edited if available, else system truth for selected year
         _sur        = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type, selected_year)
@@ -531,14 +550,16 @@ else:
         _filer_scale = res.get('lab_filer_scale', 1.0)
         _y_arr_prop  = _y_arr * _filer_scale   # scaled Y for proposed NIT
 
-        # Base NIT Estimated  — truth slabs for selected year applied to original Y
+        # Base NIT Estimated  — truth slabs for selected year, original Y & N
         _base_sch   = _get_truth_slabs(g_type, selected_year)
         _base_sch   = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
         _base_sur   = _get_truth_surcharge(g_type, selected_year)
-        _nit_base   = _nit_total(_base_sch, _y_arr, _base_sur.get('threshold', 0.0), _base_sur.get('rate', 0.0)) if len(_y_arr) else 0.0
+        _nit_base   = _nit_total(_base_sch, _y_arr, _n_arr,
+                                  _base_sur.get('threshold', 0.0), _base_sur.get('rate', 0.0))
 
         # Proposed NIT Estimated — proposed slabs + filer scale applied to Y
-        _nit_prop   = _nit_total(res['schedule_list'], _y_arr_prop, _sur_th, _sur_rt) if len(_y_arr_prop) else 0.0
+        _nit_prop   = _nit_total(res['schedule_list'], _y_arr_prop, _n_arr * _filer_scale,
+                                  _sur_th, _sur_rt)
 
         _uplift_nit = (_nit_prop - _nit_base) / _nit_base if _nit_base > 0 else 0.0
 
@@ -605,9 +626,20 @@ else:
                         grp_obs = grp_obs.sort_values(by=sort_cols).reset_index(drop=True).copy()
                         sch     = res['schedule_list']
 
-                        # ── MTR & BaseTax (spec §4A) ──────────────────────────────────
-                        # BaseTax = Σ_{k=1}^{i-1} (UB_k - LB_k)*r_k  +  (Y - LB_i)*r_i
+                        # ── MTR & BaseTax (spec §4A) ─────────────────────────────────
+                        # Per-person income = Y_aggregate / Number_of_Persons
+                        # BaseTax = Σ_{k=1}^{i-1}(UB_k-LB_k)*r_k + (Y_pp - LB_i)*r_i
                         y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
+
+                        # Filer count column (flexible match)
+                        _nc = next((c for c in grp_obs.columns if 'number' in c.lower() and
+                                    any(x in c.lower() for x in ['person','filer'])), None)
+                        n_obs    = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
+
+                        # Per-person average income
+                        n_safe   = np.where(n_obs > 0, n_obs, 1.0)
+                        y_pp     = y_obs / n_safe
+
                         lowers   = np.array([s['lower'] for s in sch])
                         rates    = np.array([s['rate']  for s in sch])
                         uppers   = np.array([s['upper'] for s in sch])
@@ -618,17 +650,19 @@ else:
                             w = uppers[k-1] - lowers[k-1]
                             base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
 
-                        # Find slab i such that LB_i <= Y < UB_i
-                        idx      = np.clip(np.searchsorted(lowers, y_obs, side='right') - 1, 0, len(sch)-1)
+                        # Find slab i such that LB_i <= Y_pp < UB_i
+                        idx      = np.clip(np.searchsorted(lowers, y_pp, side='right') - 1, 0, len(sch)-1)
                         mtr_obs  = rates[idx]
-                        base_tax = np.maximum(base_cum[idx] + (y_obs - lowers[idx]) * mtr_obs, 0.0)
+                        base_tax_pp = np.maximum(base_cum[idx] + (y_pp - lowers[idx]) * mtr_obs, 0.0)
+                        base_tax = base_tax_pp * n_obs   # scale back to band total
 
                         # ── NIT Estimated (spec §4A surcharge) ───────────────────────
-                        nit_est  = np.where(y_obs >= sur_thresh,
+                        # Surcharge checked against per-person income
+                        nit_est  = np.where(y_pp >= sur_thresh,
                                             base_tax * (1.0 + sur_rate),
                                             base_tax)
 
-                        # ── ETR (spec §4B) ────────────────────────────────────────────
+                        # ── ETR (spec §4B): ETR = NIT_band / Y_aggregate ─────────────
                         etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
 
                         # ── ΔETR (spec §4C): within each Year×Type_Tax group ─────────
