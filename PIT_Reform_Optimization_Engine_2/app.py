@@ -422,18 +422,18 @@ if mode == "Policy Lab":
     # Store effective surcharge so the results section can use it
     _lab_sur = {'threshold': new_thresh, 'rate': new_rate / 100.0}
 
-    # ─── Filer Adjustment (directly below surcharge) ───
+    # ─── Filer Adjustment (same style as Surcharge Settings) ───
     st.markdown("#### 👥 Filer Count Adjustment")
-    _def_filer_chg = 0.0
+    _def_filer_chg  = 0.0
     _init_filer_chg = float(st.session_state.get('lab_filer_chg', _def_filer_chg))
 
     fa1, fa2 = st.columns([3, 1])
     with fa1:
-        new_filer_chg = st.slider(
+        new_filer_chg = st.number_input(
             "Change in Number of Filers (%)",
-            min_value=-50.0, max_value=100.0,
+            min_value=-100.0, max_value=500.0,
             value=_init_filer_chg, step=1.0,
-            help="Scales aggregate taxable income (Y) proportionally. +10% means 10% more filers at the same avg income per filer.",
+            help="Type a % change. +10 means 10% more filers (scales aggregate income Y by ×1.10). -20 means 20% fewer filers.",
             key="filer_chg_input"
         )
     with fa2:
