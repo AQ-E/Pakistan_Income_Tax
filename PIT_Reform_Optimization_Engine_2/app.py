@@ -77,7 +77,6 @@ section[data-testid="stSidebar"] .element-container { padding: 0 4px; }
     background-color: #ffffff;
     padding: 15px;
     border-radius: 6px;
-    border-left: 4px solid #009FDA;
     box-shadow: 0 1px 4px rgba(0,59,92,0.08);
 }
 div[data-testid="stMetricValue"] { color: #003B5C !important; font-weight: 700; }
@@ -95,7 +94,7 @@ button[kind="primary"]:hover { background-color: #00518B !important; }
 
 /* ── Section headers ── */
 h1, h2, h3 { color: #003B5C; }
-h3 { border-bottom: 2px solid #009FDA; padding-bottom: 6px; }
+h3 { padding-bottom: 4px; }
 
 /* ── Data editor / tables ── */
 .stDataFrame { border: 1px solid #D1DCE5; border-radius: 6px; }
@@ -123,10 +122,10 @@ details summary { color: #003B5C; font-weight: 600; }
     flex: 1;
     min-width: 155px;
     background: #FFFFFF;
-    border-left: 4px solid #003B5C;
-    border-radius: 0 6px 6px 0;
+    border: 1px solid #E8EDF2;
+    border-radius: 8px;
     padding: 14px 18px 12px 16px;
-    box-shadow: 0 1px 5px rgba(0,59,92,0.10);
+    box-shadow: 0 1px 4px rgba(0,59,92,0.07);
 }
 .imf-mc-label {
     font-size: 0.68rem;
@@ -745,7 +744,7 @@ else:
             with t_ana:
                 st.markdown(f"""
 <div class="imf-section-tag">Analysis Results</div>
-<h3 style="margin-top:6px;">🏆 {res['stage_selected']} Schedule &mdash; {g_type}</h3>
+<h3 style="margin-top:6px;">🏆 {g_type}</h3>
 """, unsafe_allow_html=True)
 
                 # ── IMF-style metric cards ─────────────────────────────────
@@ -775,7 +774,7 @@ else:
     <div class="imf-mc-label">Avg ETR (Data-Weighted)</div>
     <div class="imf-mc-value">{_avg_etr_data:.2%}</div>
   </div>
-  <div class="imf-metric-card" style="border-left-color:#009FDA;">
+  <div class="imf-metric-card">
     <div class="imf-mc-label">MTR Max / CETR Max</div>
     <div class="imf-mc-value">{max_mtr:.1%} / {max_cetr:.2f}pp</div>
   </div>
