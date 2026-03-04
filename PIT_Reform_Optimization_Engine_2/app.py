@@ -93,87 +93,100 @@ if 'lab_slabs' not in st.session_state:
 def _norm(s):
     return str(s).lower().replace('-', ' ').replace('_', ' ').strip()
 
-def _get_truth_slabs(g_type):
-    """Case-insensitive lookup into TRUTH_SLABS dict."""
-    for k, v in TRUTH_SLABS.items():
-        if _norm(k) == _norm(g_type):
+# Canonical type name mapping (Excel label → app label)
+_TYPE_CANON = {
+    'salaried':      'Salaried',
+    'non salaried':  'Non-Salaried',
+    'non-salaried':  'Non-Salaried',
+    'aop':           'AOP',
+    'nsc':           'Consolidated',   # NSC = Non-Salaried Consolidated = Consolidated
+    'consolidated':  'Consolidated',
+}
+
+def _canon_type(raw):
+    """Normalise an Excel Tax_Type label to the app's canonical name."""
+    n = _norm(str(raw))
+    return _TYPE_CANON.get(n, str(raw).strip().title())
+
+def _get_truth_slabs(g_type, year=None):
+    """Year-aware, case-insensitive lookup into TRUTH_SLABS.
+    Falls back to any year if the requested year is not found."""
+    canon = _canon_type(g_type)
+    # Try exact year first
+    if year is not None:
+        key = (int(year), canon)
+        if key in TRUTH_SLABS:
+            v = TRUTH_SLABS[key]
+            return v.copy() if not v.empty else None
+    # Fallback: any year, matching type
+    for (yr, tp), v in TRUTH_SLABS.items():
+        if _norm(tp) == _norm(canon):
             return v.copy() if not v.empty else None
     return None
 
-def _get_truth_surcharge(g_type):
-    """Case-insensitive lookup into TRUTH_SURCHARGES dict."""
-    for k, v in TRUTH_SURCHARGES.items():
-        if _norm(k) == _norm(g_type):
+def _get_truth_surcharge(g_type, year=None):
+    """Year-aware, case-insensitive lookup into TRUTH_SURCHARGES."""
+    canon = _canon_type(g_type)
+    if year is not None:
+        key = (int(year), canon)
+        if key in TRUTH_SURCHARGES:
+            return TRUTH_SURCHARGES[key]
+    # Fallback
+    for (yr, tp), v in TRUTH_SURCHARGES.items():
+        if _norm(tp) == _norm(canon):
             return v
     return {'threshold': 0.0, 'rate': 0.0}
 
 @st.cache_data
 def load_truth_slabs(file_path):
-    df = pd.read_excel(file_path)
-    slabs = {}
-    surcharges = {}
-    
-    for (year, ttype), g in df.groupby(['Year', 'Tax_Type']):
-        ttype = str(ttype).strip().lower().replace('_', '-')
-        if ttype == 'non-salaried': ttype = 'Non-Salaried'
-        elif ttype == 'salaried': ttype = 'Salaried'
-        elif ttype == 'aop': ttype = 'AOP'
-        
-        g_slabs = []
+    """Parse PIT_slabs_2025.xlsx into year-aware dicts.
+    Keys are (year, canonical_type) tuples."""
+    df = pd.read_excel(file_path, engine='openpyxl')
+    slabs      = {}   # {(year, type): DataFrame}
+    surcharges = {}   # {(year, type): {'threshold': float, 'rate': float}}
+
+    for (year, raw_ttype), g in df.groupby(['Year', 'Tax_Type']):
+        ttype = _canon_type(raw_ttype)   # e.g. 'NSC' -> 'Consolidated'
+        key   = (int(year), ttype)
+
+        g_slabs  = []
         s_thresh = 0.0
-        s_rate = 0.0
-        
+        s_rate   = 0.0
+
         for _, r in g.iterrows():
-            lower = str(r['Lower_slab']).strip().lower()
-            upper = str(r['Upper_slab']).strip().lower()
-            mtr   = r['MTR']
+            lower        = str(r['Lower_slab']).strip().lower()
+            upper        = str(r['Upper_slab']).strip().lower()
+            mtr          = r['MTR']
             tax_rate_str = str(r['TAX RATE']).lower()
 
-            # Skip NaN rows (separator rows in Excel)
+            # Skip blank separator rows
             if pd.isna(mtr) and 'surcharge' not in lower and 'surcharge' not in upper:
                 continue
 
             is_surcharge = 'surcharge' in lower or 'surcharge' in upper or 'liability' in tax_rate_str
 
             if is_surcharge:
-                # Extract surcharge rate — use MTR column if valid, else parse text
-                if pd.notna(mtr):
-                    s_rate = float(mtr)
-                else:
-                    pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', tax_rate_str)
-                    s_rate = float(pct[0]) / 100.0 if pct else 0.0
-
-                # Extract surcharge income threshold from Lower_slab or text
-                # Lower_slab row often contains the threshold value directly
-                l_num = pd.to_numeric(r['Lower_slab'], errors='coerce')
+                s_rate = float(mtr) if pd.notna(mtr) else 0.0
+                l_num  = pd.to_numeric(r['Lower_slab'], errors='coerce')
                 if pd.notna(l_num):
                     s_thresh = float(l_num)
                 else:
-                    # Parse from text: pick the LARGEST number (that's the income threshold)
-                    nums = [float(n.replace(',', '')) for n in re.findall(r'[\d,]+', tax_rate_str) if n.replace(',', '').isdigit()]
-                    # Threshold is a large income figure; rate-like numbers are small
+                    nums = [float(n.replace(',', '')) for n in re.findall(r'[\d,]+', tax_rate_str)
+                            if n.replace(',', '').isdigit()]
                     income_nums = [n for n in nums if n >= 100_000]
                     s_thresh = income_nums[0] if income_nums else 0.0
-
             else:
                 l_val = pd.to_numeric(r['Lower_slab'], errors='coerce')
                 u_val = np.inf if upper == '+' else pd.to_numeric(r['Upper_slab'], errors='coerce')
                 if pd.isna(u_val): u_val = np.inf
-
-                # MTR column is the source of truth.
-                # Only fall back to TAX RATE text if MTR cell is blank.
-                if pd.notna(mtr):
-                    mtr_val = float(mtr)
-                else:
-                    pct = re.findall(r'(\d+(?:\.\d+)?)\s*%', tax_rate_str)
-                    mtr_val = float(pct[-1]) / 100.0 if pct else 0.0
-
+                mtr_val = float(mtr) if pd.notna(mtr) else 0.0
                 if pd.notna(l_val):
-                    g_slabs.append({'lower_bound': float(l_val), 'upper_bound': float(u_val), 'marginal_rate': mtr_val})
+                    g_slabs.append({'lower_bound': float(l_val),
+                                    'upper_bound': float(u_val),
+                                    'marginal_rate': mtr_val})
 
-
-        slabs[ttype]     = pd.DataFrame(g_slabs)
-        surcharges[ttype] = {'threshold': s_thresh, 'rate': s_rate}
+        slabs[key]      = pd.DataFrame(g_slabs)
+        surcharges[key] = {'threshold': s_thresh, 'rate': s_rate}
 
     return slabs, surcharges
 
@@ -281,8 +294,8 @@ with st.sidebar:
                 if g_agg.empty: continue
                 total_tax = g_agg['normal_income_tax_920000'].sum()
                 
-                # Always use PIT_slabs_2025.xlsx as truth for base slabs
-                base_slabs = _get_truth_slabs(g_type)
+                # Use year-aware slab lookup from PIT_slabs_2025.xlsx
+                base_slabs = _get_truth_slabs(g_type, selected_year)
                 if base_slabs is None:
                     base_slabs = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
                     if base_slabs['marginal_rate'].max() > 1.0: base_slabs['marginal_rate'] /= 100.0
@@ -296,7 +309,10 @@ with st.sidebar:
 
     else:  # Policy Lab — this runs when mode != "Auto Optimize"
         st.markdown("### Policy Lab Setup")
-        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "Consolidated"])
+        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "Consolidated (NSC)"])
+        # Map display name to internal canonical name
+        lab_type = 'Consolidated' if lab_type == 'Consolidated (NSC)' else lab_type
+
         
         # Track active lab type to handle switching
         if 'lab_type_active' not in st.session_state:
@@ -309,8 +325,8 @@ with st.sidebar:
         total_tax = g_agg['normal_income_tax_920000'].sum()
         
         lab_nrm = _norm(lab_type)
-        # Always use PIT_slabs_2025.xlsx as truth for Policy Lab base
-        base_slabs_raw = _get_truth_slabs(lab_type)
+        # Year-aware slab lookup from PIT_slabs_2025.xlsx
+        base_slabs_raw = _get_truth_slabs(lab_type, selected_year)
         if base_slabs_raw is None:
             base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
             if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
