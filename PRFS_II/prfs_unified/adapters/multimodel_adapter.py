@@ -156,67 +156,96 @@ def get_cached_forecast(
             index=exog_future.index,
         )
 
-    # ── ARIMAX — manual recursive forecast seeded from df_hist ────────────
-    # ARIMAX(1,1,0): Δlog_T_t = intercept + phi*Δlog_T_{t-1} + beta*X_t
-    # Level forecast: log_T_{t+1} = log_T_t + Δlog_T_{t+1}
-    # We seed Δlog_T_t from the LAST TWO values of df_hist so any user
-    # edit to the most recent row changes the starting difference → the
-    # forecast changes accordingly.
+    # ── ARIMAX — correct structural decomposition ──────────────────────────
+    # statsmodels SARIMAX(1,1,0) with exog estimates:
+    #   y_t = β·X_t + u_t          (level regression on exog)
+    #   (1 - φL)(1 - L) u_t = c + ε_t    (ARIMA on the ERROR component)
+    #
+    # So the exog enters as a LEVEL regression — the differenced ARIMA part
+    # applies to the residual u_t, NOT to y_t directly. My previous code put
+    # β·X inside the difference equation, which caused values to explode.
+    #
+    # Correct forecast procedure:
+    #   1. Compute u_T = y_T - β·X_T, u_{T-1} = y_{T-1} - β·X_{T-1}
+    #   2. Δu_T = u_T - u_{T-1}
+    #   3. For each step h:
+    #        Δu_h = c + φ·Δu_{h-1}
+    #        u_h  = u_{h-1} + Δu_h
+    #        ŷ_h  = β·X_{future,h} + u_h
+    #   4. Convert: exp(ŷ_h) → level PKR
+    #
+    # Any user edit to y_T or X_T in Data Preview changes u_T → forecast changes. ✓
     if model_kind == "arimax":
         res    = bundle_head["arimax"]["res"]
         params = dict(res.params)
 
         intercept = params.get("intercept", params.get("const", 0.0))
-        phi       = params.get("ar.L1", 0.0)   # AR(1) on differences
+        phi       = params.get("ar.L1", 0.0)   # AR(1) on differenced errors
         sigma2    = params.get("sigma2", float(np.var(res.resid.dropna())))
-        sigma     = float(np.sqrt(max(sigma2, 1e-12)))
 
-        # Beta for each exog column (no lag suffix in ARIMAX params)
-        beta = {col: params.get(col, 0.0) for col in spec_x}
+        # Beta for each exog column (level regression coefficients)
+        beta = {}
+        for col in spec_x:
+            beta[col] = params.get(col, 0.0)
 
-        # Seed last level and last difference from df_hist
+        # ── Compute error series u_t = y_t - β·X_t from user data ─────────
         if _df_hist is not None and y_name in _df_hist.columns:
-            y_series   = _df_hist[y_name].dropna()
-            last_level = float(y_series.iloc[-1])
-            last_diff  = float(y_series.iloc[-1] - y_series.iloc[-2]) if len(y_series) >= 2 else 0.0
+            y_series = _df_hist[y_name].dropna()
+            # Regression component at each t
+            reg_vals = np.zeros(len(y_series))
+            for col, b in beta.items():
+                if col in _df_hist.columns:
+                    x_vals = _df_hist[col].reindex(y_series.index).fillna(0).values
+                    reg_vals += b * x_vals
+            u_series = y_series.values - reg_vals
+            last_u   = float(u_series[-1])
+            last_du  = float(u_series[-1] - u_series[-2]) if len(u_series) >= 2 else 0.0
         else:
-            y_series   = pd.Series(res.model.endog)
-            last_level = float(y_series.iloc[-1])
-            last_diff  = float(y_series.diff().iloc[-1])
+            # Fallback: derive from model's internal data
+            y_orig    = pd.Series(res.model.endog)
+            reg_orig  = np.zeros(len(y_orig))
+            if hasattr(res.model, 'exog') and res.model.exog is not None:
+                reg_orig = res.model.exog @ np.array([beta.get(c, 0) for c in spec_x])
+            u_orig    = y_orig.values - reg_orig
+            last_u    = float(u_orig[-1])
+            last_du   = float(u_orig[-1] - u_orig[-2]) if len(u_orig) >= 2 else 0.0
 
-        yhat_log   = []
-        levels_log = []
-        cur_level  = last_level
-        cur_diff   = last_diff
+        # ── Point forecast ─────────────────────────────────────────────────
+        yhat_log = []
+        cur_u    = last_u
+        cur_du   = last_du
 
         for h in range(horizon):
             exog_row = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
-            # Predicted difference
-            exog_contrib = sum(beta.get(col, 0.0) * float(exog_row[col])
-                               for col in spec_x if col in exog_row.index)
-            next_diff  = intercept + phi * cur_diff + exog_contrib
-            next_level = cur_level + next_diff
-            yhat_log.append(next_level)
-            levels_log.append(next_level)
-            cur_diff  = next_diff
-            cur_level = next_level
+            # Regression component at future time
+            reg_h = sum(beta.get(col, 0.0) * float(exog_row[col])
+                        for col in spec_x if col in exog_row.index)
+            # ARIMA error forecast
+            next_du = intercept + phi * cur_du
+            next_u  = cur_u + next_du
+            # Combined forecast
+            yhat_h  = reg_h + next_u
+            yhat_log.append(yhat_h)
+            cur_du = next_du
+            cur_u  = next_u
 
         yhat_log = np.array(yhat_log)
         resid    = res.resid.dropna().values
 
+        # ── Simulation paths for confidence intervals ──────────────────────
         sims = []
         for _ in range(n_sims):
-            noise      = np.random.choice(resid, size=horizon, replace=True)
-            sim_level  = last_level
-            sim_diff   = last_diff
-            sim_path   = []
+            noise    = np.random.choice(resid, size=horizon, replace=True)
+            sim_u    = last_u
+            sim_du   = last_du
+            sim_path = []
             for h in range(horizon):
-                exog_row     = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
-                exog_contrib = sum(beta.get(col, 0.0) * float(exog_row[col])
-                                   for col in spec_x if col in exog_row.index)
-                sim_diff  = intercept + phi * sim_diff + exog_contrib + noise[h]
-                sim_level = sim_level + sim_diff
-                sim_path.append(np.exp(sim_level))
+                exog_row = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
+                reg_h    = sum(beta.get(col, 0.0) * float(exog_row[col])
+                               for col in spec_x if col in exog_row.index)
+                sim_du   = intercept + phi * sim_du + noise[h]
+                sim_u    = sim_u + sim_du
+                sim_path.append(np.exp(reg_h + sim_u))
             sims.append(sim_path)
 
         sims = np.array(sims)
