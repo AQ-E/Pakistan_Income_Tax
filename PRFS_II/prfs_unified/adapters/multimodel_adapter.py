@@ -44,63 +44,110 @@ def get_cached_forecast(
     exog_future.index = pd.PeriodIndex(exog_future.index, freq="Y")
 
     y_name = bundle_head["spec"]["y"]
-    spec_x = bundle_head["spec"]["x"]   # e.g. ['log_gdp', 'inflation']
+    spec_x = bundle_head["spec"]["x"]
 
-    # ── Helper: re-anchor a pre-trained result to df_hist ─────────────────
-    # Keeps all coefficients exactly as trained (refit=False).
-    # Only updates the "last observed values" so forecast continues from
-    # wherever the user's edited data ends — not the original 2026 endpoint.
-    def _apply_to_user_data(res, endog_col, exog_cols):
-        """
-        Returns res.apply(new_endog, new_exog, refit=False).
-        Falls back to original res if anything goes wrong.
-        """
-        if _df_hist is None:
-            return res
-        try:
-            if endog_col not in _df_hist.columns:
-                return res
-            y_new = _df_hist[endog_col].dropna()
-            if len(y_new) < 5:
-                return res
-            # Build exog aligned to y_new index
-            x_avail = [c for c in exog_cols if c in _df_hist.columns]
-            if not x_avail:
-                return res
-            x_new = _df_hist[x_avail].reindex(y_new.index).ffill().bfill()
-            # Drop any rows where either y or x is NaN
-            valid = y_new.notna() & x_new.notna().all(axis=1)
-            y_new = y_new[valid]
-            x_new = x_new[valid]
-            if len(y_new) < 5:
-                return res
-            return res.apply(y_new.values, exog=x_new.values, refit=False)
-        except Exception:
-            return res   # silent fallback — original behaviour preserved
-
-    # ── ARDL ──────────────────────────────────────────────────────────
+    # ── ARDL — manual recursive forecast seeded from df_hist ──────────────
+    # Why manual instead of res.forecast()?
+    # res.forecast() always starts from the model's ORIGINAL training endpoint
+    # (stored internally in the fitted object). If the user edits e.g. the
+    # 2026 DT value, res.forecast() never sees it.
+    # Instead we:
+    #   1. Keep ALL pre-trained coefficients (res.params) unchanged.
+    #   2. Extract the last p observed y values from df_hist as the AR seed.
+    #   3. Extract historical exog (for any lag-1 exog terms) from df_hist.
+    #   4. Step forward recursively using future exog from exog_future.
+    # Change any historical value → AR seed changes → forecast changes. ✓
     if model_kind == "ardl":
-        res = bundle_head["ardl"]["res"]
-        # Re-anchor to user's current data so forecast starts from
-        # the user's last observed value, not the original training endpoint.
-        res = _apply_to_user_data(res, y_name, spec_x)
-        yhat_log = res.forecast(steps=horizon, exog=exog_future)
-        resid = res.resid.dropna().values
-        ar_params = [v for k, v in res.params.items() if k.startswith(y_name + ".L")]
+        res    = bundle_head["ardl"]["res"]
+        params = dict(res.params)
+
+        # Parse param names into AR lags {lag: coef} and exog lags {col: {lag: coef}}
+        ar_lags   = {}   # {1: 0.72, 2: 0.10, ...}
+        exog_lags = {}   # {'log_gdp': {0: 0.89, 1: -0.12}, ...}
+        const     = params.get("const", params.get("intercept", 0.0))
+
+        for k, v in params.items():
+            if k in ("const", "intercept"):
+                continue
+            if k.startswith(y_name + ".L"):
+                lag = int(k[len(y_name) + 2:])
+                ar_lags[lag] = v
+            elif ".L" in k:
+                col, lag_str = k.rsplit(".L", 1)
+                lag = int(lag_str)
+                exog_lags.setdefault(col, {})[lag] = v
+            else:
+                # No lag suffix → treat as contemporaneous exog (lag 0)
+                exog_lags.setdefault(k, {})[0] = v
+
+        max_ar_lag = max(ar_lags.keys()) if ar_lags else 1
+
+        # Seed y history from df_hist (user-edited values)
+        if _df_hist is not None and y_name in _df_hist.columns:
+            y_hist = list(_df_hist[y_name].dropna().values)
+        else:
+            y_hist = list(res.fittedvalues.dropna().values)
+
+        # Historical exog series (needed for any lag-1 exog terms at step 1)
+        hist_exog = {}
+        if _df_hist is not None:
+            for col in exog_lags:
+                if col in _df_hist.columns:
+                    hist_exog[col] = list(_df_hist[col].dropna().values)
+
+        # Recursive multi-step forecast
+        yhat_log = []
+        future_y = list(y_hist)   # grows with each forecasted step
+
+        for h in range(horizon):
+            exog_row = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
+            y_pred   = const
+
+            # AR contribution — uses actual df_hist values for seeds
+            for lag, coef in ar_lags.items():
+                idx = -(lag)
+                if abs(idx) <= len(future_y):
+                    y_pred += coef * future_y[idx]
+
+            # Exog contribution
+            for col, lag_coefs in exog_lags.items():
+                for lag, coef in lag_coefs.items():
+                    if lag == 0:
+                        # Contemporaneous — use future exog column
+                        val = float(exog_row[col]) if col in exog_row.index else 0.0
+                        y_pred += coef * val
+                    else:
+                        # Historical exog lag — go back into df_hist then exog_future
+                        future_idx = h - lag   # index into exog_future (may be negative)
+                        if future_idx >= 0:
+                            val = float(exog_future.iloc[future_idx][col]) if col in exog_future.columns else 0.0
+                        else:
+                            # Still in history
+                            hist_vals = hist_exog.get(col, [])
+                            hist_idx  = future_idx   # negative → from end
+                            val = float(hist_vals[hist_idx]) if hist_vals and abs(hist_idx) <= len(hist_vals) else 0.0
+                        y_pred += coef * val
+
+            yhat_log.append(y_pred)
+            future_y.append(y_pred)
+
+        yhat_log  = np.array(yhat_log)
+        resid     = res.resid.dropna().values
+        ar_coefs  = [v for _, v in sorted(ar_lags.items())]
 
         sims = []
         for _ in range(n_sims):
             noise = np.random.choice(resid, size=horizon, replace=True)
-            path = np.zeros(horizon)
+            path  = np.zeros(horizon)
             for i in range(horizon):
-                ar = sum(c * path[i - (p + 1)] for p, c in enumerate(ar_params) if i - (p + 1) >= 0)
+                ar = sum(c * path[i - (p + 1)] for p, c in enumerate(ar_coefs) if i - (p + 1) >= 0)
                 path[i] = ar + noise[i]
-            sims.append(np.exp(yhat_log.values + path))
+            sims.append(np.exp(yhat_log + path))
 
         sims = np.array(sims)
         return pd.DataFrame(
             {
-                "yhat": np.exp(yhat_log.values),
+                "yhat": np.exp(yhat_log),
                 "lo80": np.quantile(sims, 0.10, axis=0),
                 "hi80": np.quantile(sims, 0.90, axis=0),
                 "lo95": np.quantile(sims, 0.025, axis=0),
@@ -109,25 +156,81 @@ def get_cached_forecast(
             index=exog_future.index,
         )
 
-    # ── ARIMAX ────────────────────────────────────────────────────────
+    # ── ARIMAX — manual recursive forecast seeded from df_hist ────────────
+    # ARIMAX(1,1,0): Δlog_T_t = intercept + phi*Δlog_T_{t-1} + beta*X_t
+    # Level forecast: log_T_{t+1} = log_T_t + Δlog_T_{t+1}
+    # We seed Δlog_T_t from the LAST TWO values of df_hist so any user
+    # edit to the most recent row changes the starting difference → the
+    # forecast changes accordingly.
     if model_kind == "arimax":
-        res = bundle_head["arimax"]["res"]
-        # Re-anchor to user's current data (same reason as ARDL above).
-        res = _apply_to_user_data(res, y_name, spec_x)
-        fc = res.get_forecast(steps=horizon, exog=exog_future)
-        yhat_log = fc.predicted_mean
-        ci80 = fc.conf_int(alpha=0.2)
-        ci95 = fc.conf_int(alpha=0.05)
+        res    = bundle_head["arimax"]["res"]
+        params = dict(res.params)
+
+        intercept = params.get("intercept", params.get("const", 0.0))
+        phi       = params.get("ar.L1", 0.0)   # AR(1) on differences
+        sigma2    = params.get("sigma2", float(np.var(res.resid.dropna())))
+        sigma     = float(np.sqrt(max(sigma2, 1e-12)))
+
+        # Beta for each exog column (no lag suffix in ARIMAX params)
+        beta = {col: params.get(col, 0.0) for col in spec_x}
+
+        # Seed last level and last difference from df_hist
+        if _df_hist is not None and y_name in _df_hist.columns:
+            y_series   = _df_hist[y_name].dropna()
+            last_level = float(y_series.iloc[-1])
+            last_diff  = float(y_series.iloc[-1] - y_series.iloc[-2]) if len(y_series) >= 2 else 0.0
+        else:
+            y_series   = pd.Series(res.model.endog)
+            last_level = float(y_series.iloc[-1])
+            last_diff  = float(y_series.diff().iloc[-1])
+
+        yhat_log   = []
+        levels_log = []
+        cur_level  = last_level
+        cur_diff   = last_diff
+
+        for h in range(horizon):
+            exog_row = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
+            # Predicted difference
+            exog_contrib = sum(beta.get(col, 0.0) * float(exog_row[col])
+                               for col in spec_x if col in exog_row.index)
+            next_diff  = intercept + phi * cur_diff + exog_contrib
+            next_level = cur_level + next_diff
+            yhat_log.append(next_level)
+            levels_log.append(next_level)
+            cur_diff  = next_diff
+            cur_level = next_level
+
+        yhat_log = np.array(yhat_log)
+        resid    = res.resid.dropna().values
+
+        sims = []
+        for _ in range(n_sims):
+            noise      = np.random.choice(resid, size=horizon, replace=True)
+            sim_level  = last_level
+            sim_diff   = last_diff
+            sim_path   = []
+            for h in range(horizon):
+                exog_row     = exog_future.iloc[h] if h < len(exog_future) else exog_future.iloc[-1]
+                exog_contrib = sum(beta.get(col, 0.0) * float(exog_row[col])
+                                   for col in spec_x if col in exog_row.index)
+                sim_diff  = intercept + phi * sim_diff + exog_contrib + noise[h]
+                sim_level = sim_level + sim_diff
+                sim_path.append(np.exp(sim_level))
+            sims.append(sim_path)
+
+        sims = np.array(sims)
         return pd.DataFrame(
             {
-                "yhat": np.exp(yhat_log.values),
-                "lo80": np.exp(ci80.iloc[:, 0].values),
-                "hi80": np.exp(ci80.iloc[:, 1].values),
-                "lo95": np.exp(ci95.iloc[:, 0].values),
-                "hi95": np.exp(ci95.iloc[:, 1].values),
+                "yhat": np.exp(yhat_log),
+                "lo80": np.quantile(sims, 0.10, axis=0),
+                "hi80": np.quantile(sims, 0.90, axis=0),
+                "lo95": np.quantile(sims, 0.025, axis=0),
+                "hi95": np.quantile(sims, 0.975, axis=0),
             },
             index=exog_future.index,
         )
+
 
     # ── ElasticNet ────────────────────────────────────────────────────
     if model_kind == "enet":
