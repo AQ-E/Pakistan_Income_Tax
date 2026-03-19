@@ -132,12 +132,14 @@ def get_cached_forecast(
             future_y.append(y_pred)
 
         yhat_log  = np.array(yhat_log)
-        resid     = res.resid.dropna().values
+        # Use parametric error variance to prevent empirical artifacts from exploding CIs
+        sigma2    = float(np.var(res.resid.dropna().values[2:]))
+        std_err   = float(np.sqrt(max(sigma2, 1e-12)))
         ar_coefs  = [v for _, v in sorted(ar_lags.items())]
 
         sims = []
         for _ in range(n_sims):
-            noise = np.random.choice(resid, size=horizon, replace=True)
+            noise = np.random.normal(0, std_err, size=horizon)
             path  = np.zeros(horizon)
             for i in range(horizon):
                 ar = sum(c * path[i - (p + 1)] for p, c in enumerate(ar_coefs) if i - (p + 1) >= 0)
@@ -230,12 +232,13 @@ def get_cached_forecast(
             cur_u  = next_u
 
         yhat_log = np.array(yhat_log)
-        resid    = res.resid.dropna().values
+        # Parametric error distribution prevents drawing massive initialization artifacts from resid
+        std_err  = float(np.sqrt(max(sigma2, 1e-12)))
 
         # ── Simulation paths for confidence intervals ──────────────────────
         sims = []
         for _ in range(n_sims):
-            noise    = np.random.choice(resid, size=horizon, replace=True)
+            noise    = np.random.normal(0, std_err, size=horizon)
             sim_u    = last_u
             sim_du   = last_du
             sim_path = []
