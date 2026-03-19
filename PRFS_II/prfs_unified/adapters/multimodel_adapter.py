@@ -44,10 +44,46 @@ def get_cached_forecast(
     exog_future.index = pd.PeriodIndex(exog_future.index, freq="Y")
 
     y_name = bundle_head["spec"]["y"]
+    spec_x = bundle_head["spec"]["x"]   # e.g. ['log_gdp', 'inflation']
+
+    # ── Helper: re-anchor a pre-trained result to df_hist ─────────────────
+    # Keeps all coefficients exactly as trained (refit=False).
+    # Only updates the "last observed values" so forecast continues from
+    # wherever the user's edited data ends — not the original 2026 endpoint.
+    def _apply_to_user_data(res, endog_col, exog_cols):
+        """
+        Returns res.apply(new_endog, new_exog, refit=False).
+        Falls back to original res if anything goes wrong.
+        """
+        if _df_hist is None:
+            return res
+        try:
+            if endog_col not in _df_hist.columns:
+                return res
+            y_new = _df_hist[endog_col].dropna()
+            if len(y_new) < 5:
+                return res
+            # Build exog aligned to y_new index
+            x_avail = [c for c in exog_cols if c in _df_hist.columns]
+            if not x_avail:
+                return res
+            x_new = _df_hist[x_avail].reindex(y_new.index).ffill().bfill()
+            # Drop any rows where either y or x is NaN
+            valid = y_new.notna() & x_new.notna().all(axis=1)
+            y_new = y_new[valid]
+            x_new = x_new[valid]
+            if len(y_new) < 5:
+                return res
+            return res.apply(y_new.values, exog=x_new.values, refit=False)
+        except Exception:
+            return res   # silent fallback — original behaviour preserved
 
     # ── ARDL ──────────────────────────────────────────────────────────
     if model_kind == "ardl":
         res = bundle_head["ardl"]["res"]
+        # Re-anchor to user's current data so forecast starts from
+        # the user's last observed value, not the original training endpoint.
+        res = _apply_to_user_data(res, y_name, spec_x)
         yhat_log = res.forecast(steps=horizon, exog=exog_future)
         resid = res.resid.dropna().values
         ar_params = [v for k, v in res.params.items() if k.startswith(y_name + ".L")]
@@ -76,6 +112,8 @@ def get_cached_forecast(
     # ── ARIMAX ────────────────────────────────────────────────────────
     if model_kind == "arimax":
         res = bundle_head["arimax"]["res"]
+        # Re-anchor to user's current data (same reason as ARDL above).
+        res = _apply_to_user_data(res, y_name, spec_x)
         fc = res.get_forecast(steps=horizon, exog=exog_future)
         yhat_log = fc.predicted_mean
         ci80 = fc.conf_int(alpha=0.2)
