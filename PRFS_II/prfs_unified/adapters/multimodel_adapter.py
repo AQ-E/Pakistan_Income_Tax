@@ -34,6 +34,7 @@ def get_cached_forecast(
     horizon: int,
     exog_future_json: str,
     n_sims: int = 500,
+    data_version: str = "",   # ← cache-bust key: changes whenever user edits data
     _bundle=None,
     _df_hist=None,
 ):
@@ -167,6 +168,7 @@ def forecast_head(
     head: str, chosen: str, horizon: int, n_sims: int,
     targets: Dict, elasticities: Dict,
     covid_on: bool, regime_on: bool,
+    data_version: str = "",
 ) -> pd.DataFrame:
     """Build exog from dynamic targets and run the forecast."""
     spec_x = bundle["models"][head]["spec"]["x"]
@@ -179,6 +181,7 @@ def forecast_head(
     )
     return get_cached_forecast(
         chosen, head, horizon, exog.to_json(), n_sims,
+        data_version=data_version,
         _bundle=bundle, _df_hist=df_hist,
     ), exog
 
@@ -188,6 +191,7 @@ def forecast_total(
     chosen_model: str, horizon: int, n_sims: int,
     targets: Dict, elasticities: Dict,
     covid_on: bool, regime_on: bool,
+    data_version: str = "",
 ) -> pd.DataFrame:
     """Sum forecasts for all sub-heads using the specified model."""
     total = None
@@ -195,6 +199,7 @@ def forecast_total(
         fore, _ = forecast_head(
             bundle, meta, df_hist, h, chosen_model, horizon, n_sims,
             targets, elasticities, covid_on, regime_on,
+            data_version=data_version,
         )
         total = fore if total is None else total + fore
     return total

@@ -135,6 +135,15 @@ perf          = mm.perf_table(meta) if meta else None
 _max_year = int(df_raw.index.max().year) if hasattr(df_raw.index, "year") else int(str(df_raw.index.max())[:4])
 _min_year = int(df_raw.index.min().year) if hasattr(df_raw.index, "year") else int(str(df_raw.index.min())[:4])
 
+# ── Data version: a short hash of the current data content ───────────────
+# This is used as a cache-busting key — the moment the user edits any cell
+# and clicks Apply, this hash changes, which forces get_cached_forecast to
+# recompute instead of returning a stale cached result.
+import hashlib as _hashlib
+_data_version = _hashlib.md5(
+    pd.util.hash_pandas_object(df_raw, index=True).values.tobytes()
+).hexdigest()[:12]
+
 # ═════════════════════════════════════════════════════════════════════════
 # Sidebar
 # ═════════════════════════════════════════════════════════════════════════
@@ -177,11 +186,13 @@ try:
             bundle, meta, df_hist,
             head, chosen, horizon, n_sims,
             targets, elasticities, covid_on, regime_on,
+            data_version=_data_version,
         )
         fore_total = mm.forecast_total(
             bundle, meta, df_hist,
             chosen, horizon, n_sims,
             targets, elasticities, covid_on, regime_on,
+            data_version=_data_version,
         )
     else:
         # Dynamic engine
@@ -866,7 +877,10 @@ with tab6:
                 [c for c in _work.columns if not c.startswith("log_")]
             ].reset_index(drop=True)
 
-            # 8. Clear DSM pipeline so it re-fits on new data
+            # 8. Clear ALL forecast caches so fresh computation runs on rerun
+            mm.get_cached_forecast.clear()
+
+            # 9. Clear DSM pipeline so it re-fits on new data
             st.session_state.pop("dyn_pipeline", None)
 
             _new_max = int(_work.index.max().year)
