@@ -742,6 +742,7 @@ $$\log T_t = c + \rho \log T_{t-1} + \beta^* \log \hat{X}_t + \delta^* D_t + u_t
                 "Groups correlated regressors (unlike LASSO) · "
                 "Hyper-parameters tuned by rolling-origin CV"
             )
+
         with c2:
             st.markdown(r"""
 **Objective function (penalised OLS):**
@@ -750,6 +751,7 @@ $$\hat{\beta} = \arg\min_{\beta} \left[ \frac{1}{2T} \|y - X\beta\|_2^2 + \alpha
 
 **Feature matrix $X$** includes: `{log_T_{t-1}, log_imports_hat, log_imports_hat_{t-1}, log_exrate, inflation, policy_rate, regime}`
 """)
+
 
     with st.expander("📊 Tax Buoyancy — Log-Log Elasticity Benchmark (Prest, 1962)"):
         c1, c2 = st.columns([1, 2])
