@@ -782,42 +782,54 @@ with tab6:
 
     # ── Explanation ───────────────────────────────────────────────────────
     st.info(
-        "✏️ **This table is fully editable.**  \n"
-        "- **Modify** any existing value directly in the cell.  \n"
-        "- **Add a new row** at the bottom for a new fiscal year (set `year_end`, fill level columns).  \n"
-        "- **Click 'Apply & Rerun'** to validate, recompute log-transforms, and re-run the full pipeline.  \n"
-        "- The forecast year automatically becomes **max(year_end) + 1**."
+        "👁️ **Historical data table is read-only.**  \n"
+        "- The main table shows the data currently being used for all model calculations.  \n"
+        "- To change the 2026 estimates, use the **Revised Estimates for 2026** section below.  \n"
+        "- Check **'Use Revised Estimates'** and click **'Apply & Rerun'** to update the pipeline."
     )
 
-    # ── Build the editable frame ──────────────────────────────────────────
-    # Show only the 'raw' level columns (log_ columns are auto-computed).
-    # We also keep dummy columns so the user can toggle them.
-    _log_cols = [c for c in df_hist.columns if c.startswith("log_")]
+    # ── Build the read-only frame ──────────────────────────────────────────
+    _log_cols  = [c for c in df_hist.columns if c.startswith("log_")]
     _edit_cols = [c for c in df_hist.columns if c not in _log_cols]
 
-    # Seed the editor state once from the current prepared df
-    if "editor_df" not in st.session_state:
-        st.session_state["editor_df"] = df_hist[_edit_cols].reset_index(drop=True)
+    st.dataframe(df_hist[_edit_cols].reset_index(drop=True), use_container_width=True)
 
-    # Column config: make year_end an integer, all numeric cols floats
+    st.markdown("---")
+    st.subheader("Revised Estimates for 2026")
+    
+    use_revised = st.checkbox(
+        "☑️ Use Revised Estimates for 2026", 
+        value=st.session_state.get("use_revised_2026", False),
+        help="If checked, the values below will replace the 2026 historical row in all calculations."
+    )
+
+    # Load default 2026 data from file to seed the revised editor
+    if "revised_2026_df" not in st.session_state:
+        _base = prepare_transforms(load_tax_data())
+        if 2026 in _base.index.year:
+            _def_2026 = _base[_base.index.year == 2026][_edit_cols].reset_index(drop=True)
+        else:
+            _def_2026 = pd.DataFrame([{"year_end": 2026}])
+            for c in _edit_cols:
+                if c != "year_end": _def_2026[c] = 0.0
+        st.session_state["revised_2026_df"] = _def_2026
+
+    # Column config: make year_end read-only
     _col_cfg: dict = {}
-    for col in st.session_state["editor_df"].columns:
+    for col in st.session_state["revised_2026_df"].columns:
         if col == "year_end":
-            _col_cfg[col] = st.column_config.NumberColumn(
-                "Year End", required=True, min_value=1990, max_value=2100, step=1, format="%d"
-            )
-        elif col in ("covid", "regime", "step_2024", "dummy_2024", "dummy_2025",
-                     "dummy_1995", "dummy_1996", "dummy_2002", "dummy_2003"):
+            _col_cfg[col] = st.column_config.NumberColumn("Year End", disabled=True, format="%d")
+        elif col in ("covid", "regime", "step_2024", "dummy_2024", "dummy_2025", "dummy_1995", "dummy_1996", "dummy_2002", "dummy_2003"):
             _col_cfg[col] = st.column_config.CheckboxColumn(col)
         else:
             _col_cfg[col] = st.column_config.NumberColumn(col, format="%.2f")
 
-    edited_df = st.data_editor(
-        st.session_state["editor_df"],
-        num_rows="dynamic",           # allows adding/deleting rows
+    edited_2026_df = st.data_editor(
+        st.session_state["revised_2026_df"],
+        num_rows="fixed",
         use_container_width=True,
         column_config=_col_cfg,
-        key="hist_data_editor",
+        key="rev_2026_editor",
     )
 
     col_apply, col_reset = st.columns([1, 5])
@@ -827,71 +839,39 @@ with tab6:
 
     with col_reset:
         if st.button("↩️ Reset to Original File"):
-            # Reload from disk, clear all derived session state
-            _df_reset = load_tax_data()
-            _df_reset = prepare_transforms(_df_reset)
-            st.session_state["user_df"]    = _df_reset
-            st.session_state["editor_df"]  = _df_reset[_edit_cols].reset_index(drop=True)
+            st.session_state.pop("user_df", None)
+            st.session_state.pop("revised_2026_df", None)
+            st.session_state.pop("use_revised_2026", None)
             st.session_state.pop("dyn_pipeline", None)
             st.rerun()
 
     # ── Apply logic ───────────────────────────────────────────────────────
     if apply_clicked:
-        _err = None
-
-        # 1. Drop rows where year_end is blank
-        _work = edited_df.dropna(subset=["year_end"]).copy()
-        if _work.empty:
-            _err = "No rows with a valid year_end found."
-        else:
-            # 2. Coerce year_end to int
-            try:
-                _work["year_end"] = _work["year_end"].astype(int)
-            except Exception:
-                _err = "year_end must be an integer (e.g. 2026)."
-
-        if _err is None:
-            # 3. Check uniqueness
-            _dupes = _work[_work.duplicated("year_end", keep=False)]["year_end"].unique().tolist()
-            if _dupes:
-                _err = f"Duplicate year(s) detected: {sorted(_dupes)}. Each year must appear exactly once."
-
-        if _err is None:
-            # 4. Validate required level columns are present
-            _required = ["dt", "gst", "fed", "customs", "gdp", "imports", "exrate"]
-            _missing  = [c for c in _required if c not in _work.columns]
-            if _missing:
-                _err = f"Required columns missing from the table: {_missing}"
-
-        if _err:
-            st.error(f"❌ {_err}")
-        else:
-            # 5. Sort by year, set PeriodIndex
-            _work = _work.sort_values("year_end").reset_index(drop=True)
-            _work.index = pd.PeriodIndex(_work["year_end"], freq="Y")
-
-            # 6. Re-apply the EXACT same transforms as data_io.py:prepare_transforms
+        st.session_state["use_revised_2026"] = use_revised
+        st.session_state["revised_2026_df"]  = edited_2026_df.copy()
+        
+        # Always start with clean data from disk
+        _work = prepare_transforms(load_tax_data())
+        
+        if use_revised:
+            # Overwrite the 2026 row with user's revised values
+            _rev_row = edited_2026_df.iloc[0].to_dict()
+            for col, val in _rev_row.items():
+                if col in _work.columns and col != "year_end":
+                    _work.loc[_work.index.year == 2026, col] = val
+            
+            # Convert back to flat dataframe and run prepare_transforms again to ensure logs match new levels
+            _work = _work.reset_index(drop=True)
             _work = prepare_transforms(_work)
 
-            # 7. Persist in session_state
-            st.session_state["user_df"]   = _work
-            st.session_state["editor_df"] = _work[
-                [c for c in _work.columns if not c.startswith("log_")]
-            ].reset_index(drop=True)
+        st.session_state["user_df"] = _work
+        
+        # Clear caches so pipeline rebuilds with the updated data
+        mm.get_cached_forecast.clear()
+        st.session_state.pop("dyn_pipeline", None)
 
-            # 8. Clear ALL forecast caches so fresh computation runs on rerun
-            mm.get_cached_forecast.clear()
-
-            # 9. Clear DSM pipeline so it re-fits on new data
-            st.session_state.pop("dyn_pipeline", None)
-
-            _new_max = int(_work.index.max().year)
-            st.success(
-                f"✅ Data updated! Now using **{len(_work)} years** "
-                f"(FY{int(_work.index.min().year)}–FY{_new_max}). "
-                f"Forecast year → **FY{_new_max + 1}**."
-            )
-            st.rerun()
+        st.success("✅ Settings applied! Re-running pipeline...")
+        st.rerun()
 
     st.markdown("---")
 
