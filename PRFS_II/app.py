@@ -782,24 +782,19 @@ with tab6:
 
     # ── Explanation ───────────────────────────────────────────────────────
     st.info(
-        "✏️ **This table is fully editable.**  \n"
-        "- **Modify** any existing value directly in the cell.  \n"
-        "- **Add a new row** at the bottom for a new fiscal year (set `year_end`, fill level columns).  \n"
-        "- **Click 'Apply & Rerun'** to validate, recompute log-transforms, and re-run the full pipeline.  \n"
-        "- The forecast year automatically becomes **max(year_end) + 1**."
+        "✏️ **Historical Data is fully editable.**  \n"
+        "- Modify any cell or **Add a new row** at the bottom for future years.  \n"
+        "- To cleanly override **just** 2026, you can use the **Revised Estimates** section below.  \n"
+        "- **Click 'Apply & Rerun'** to validate and re-run all models."
     )
 
     # ── Build the editable frame ──────────────────────────────────────────
-    # Show only the 'raw' level columns (log_ columns are auto-computed).
-    # We also keep dummy columns so the user can toggle them.
     _log_cols = [c for c in df_hist.columns if c.startswith("log_")]
     _edit_cols = [c for c in df_hist.columns if c not in _log_cols]
 
-    # Seed the editor state once from the current prepared df
     if "editor_df" not in st.session_state:
         st.session_state["editor_df"] = df_hist[_edit_cols].reset_index(drop=True)
 
-    # Column config: make year_end an integer, all numeric cols floats
     _col_cfg: dict = {}
     for col in st.session_state["editor_df"].columns:
         if col == "year_end":
@@ -814,10 +809,46 @@ with tab6:
 
     edited_df = st.data_editor(
         st.session_state["editor_df"],
-        num_rows="dynamic",           # allows adding/deleting rows
+        num_rows="dynamic",
         use_container_width=True,
         column_config=_col_cfg,
         key="hist_data_editor",
+    )
+
+    st.markdown("---")
+    st.subheader("Revised Estimates")
+    
+    use_revised = st.checkbox(
+        "☑️ Use Revised Estimates", 
+        value=st.session_state.get("use_revised_2026", False),
+        help="If checked, the values below will replace the 2026 row in the historical table during modeling."
+    )
+
+    if "revised_2026_df" not in st.session_state:
+        _base = prepare_transforms(load_tax_data())
+        if 2026 in _base.index.year:
+            _def_2026 = _base[_base.index.year == 2026][_edit_cols].reset_index(drop=True)
+        else:
+            _def_2026 = pd.DataFrame([{"year_end": 2026}])
+            for c in _edit_cols:
+                if c != "year_end": _def_2026[c] = 0.0
+        st.session_state["revised_2026_df"] = _def_2026
+
+    _rev_cfg: dict = {}
+    for col in st.session_state["revised_2026_df"].columns:
+        if col == "year_end":
+            _rev_cfg[col] = st.column_config.NumberColumn("Year End", disabled=True, format="%d")
+        elif col in ("covid", "regime", "step_2024", "dummy_2024", "dummy_2025", "dummy_1995", "dummy_1996", "dummy_2002", "dummy_2003"):
+            _rev_cfg[col] = st.column_config.CheckboxColumn(col)
+        else:
+            _rev_cfg[col] = st.column_config.NumberColumn(col, format="%.2f")
+
+    edited_2026_df = st.data_editor(
+        st.session_state["revised_2026_df"],
+        num_rows="fixed",
+        use_container_width=True,
+        column_config=_rev_cfg,
+        key="rev_2026_editor",
     )
 
     col_apply, col_reset = st.columns([1, 5])
@@ -832,11 +863,16 @@ with tab6:
             _df_reset = prepare_transforms(_df_reset)
             st.session_state["user_df"]    = _df_reset
             st.session_state["editor_df"]  = _df_reset[_edit_cols].reset_index(drop=True)
+            st.session_state.pop("revised_2026_df", None)
+            st.session_state.pop("use_revised_2026", None)
             st.session_state.pop("dyn_pipeline", None)
             st.rerun()
 
     # ── Apply logic ───────────────────────────────────────────────────────
     if apply_clicked:
+        st.session_state["use_revised_2026"] = use_revised
+        st.session_state["revised_2026_df"]  = edited_2026_df.copy()
+
         _err = None
 
         # 1. Drop rows where year_end is blank
@@ -866,6 +902,13 @@ with tab6:
         if _err:
             st.error(f"❌ {_err}")
         else:
+            # Override with Revised Estimates if checked
+            if use_revised and 2026 in _work["year_end"].values:
+                _rev_row = edited_2026_df.iloc[0].to_dict()
+                for col, val in _rev_row.items():
+                    if col in _work.columns and col != "year_end":
+                        _work.loc[_work["year_end"] == 2026, col] = val
+
             # 5. Sort by year, set PeriodIndex
             _work = _work.sort_values("year_end").reset_index(drop=True)
             _work.index = pd.PeriodIndex(_work["year_end"], freq="Y")
