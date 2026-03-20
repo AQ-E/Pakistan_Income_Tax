@@ -860,8 +860,7 @@ with tab6:
                 if col in _work.columns and col != "year_end":
                     _work.loc[_work.index.year == 2026, col] = val
             
-            # Convert back to flat dataframe and run prepare_transforms again to ensure logs match new levels
-            _work = _work.reset_index(drop=True)
+            # Re-run prepare_transforms to ensure logs match new levels
             _work = prepare_transforms(_work)
 
         st.session_state["user_df"] = _work
