@@ -784,7 +784,7 @@ with tab6:
     st.info(
         "👁️ **Historical data table is read-only.**  \n"
         "- The main table shows the data currently being used for all model calculations.  \n"
-        "- To change the 2026 estimates, use the **Revised Estimates for 2026** section below.  \n"
+        "- To change the 2026 estimates, use the **Revised Estimates** section below.  \n"
         "- Check **'Use Revised Estimates'** and click **'Apply & Rerun'** to update the pipeline."
     )
 
@@ -795,10 +795,10 @@ with tab6:
     st.dataframe(df_hist[_edit_cols].reset_index(drop=True), use_container_width=True)
 
     st.markdown("---")
-    st.subheader("Revised Estimates for 2026")
+    st.subheader("Revised Estimates")
     
     use_revised = st.checkbox(
-        "☑️ Use Revised Estimates for 2026", 
+        "☑️ Use Revised Estimates", 
         value=st.session_state.get("use_revised_2026", False),
         help="If checked, the values below will replace the 2026 historical row in all calculations."
     )
