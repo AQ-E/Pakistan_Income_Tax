@@ -816,7 +816,7 @@ with tab6:
     )
 
     st.markdown("---")
-    st.subheader("Budget Estimates (2026 Overrides)")
+    st.subheader("Budget Estimates")
     
     if "revised_2026_df" not in st.session_state:
         _base = prepare_transforms(load_tax_data())
