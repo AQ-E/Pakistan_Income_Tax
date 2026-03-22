@@ -784,8 +784,8 @@ with tab6:
     st.info(
         "✏️ **Historical Data is fully editable.**  \n"
         "- Modify any cell or **Add a new row** at the bottom for future years.  \n"
-        "- To cleanly override **just** 2026, you can use the **Revised Estimates** section below.  \n"
-        "- **Click 'Apply & Rerun'** to validate and re-run all models."
+        "- To cleanly override **just** 2026, you can use the **Budget Estimates** section below.  \n"
+        "- The system will **automatically re-run** and validate adjustments when you type."
     )
 
     # ── Build the editable frame ──────────────────────────────────────────
@@ -816,14 +816,8 @@ with tab6:
     )
 
     st.markdown("---")
-    st.subheader("Revised Estimates")
+    st.subheader("Budget Estimates (2026 Overrides)")
     
-    use_revised = st.checkbox(
-        "☑️ Use Revised Estimates", 
-        value=st.session_state.get("use_revised_2026", False),
-        help="If checked, the values below will replace the 2026 row in the historical table during modeling."
-    )
-
     if "revised_2026_df" not in st.session_state:
         _base = prepare_transforms(load_tax_data())
         if 2026 in _base.index.year:
@@ -851,26 +845,12 @@ with tab6:
         key="rev_2026_editor",
     )
 
-    col_apply, col_reset = st.columns([1, 5])
-
-    with col_apply:
-        apply_clicked = st.button("✅ Apply & Rerun", type="primary")
-
-    with col_reset:
-        if st.button("↩️ Reset to Original File"):
-            # Reload from disk, clear all derived session state
-            _df_reset = load_tax_data()
-            _df_reset = prepare_transforms(_df_reset)
-            st.session_state["user_df"]    = _df_reset
-            st.session_state["editor_df"]  = _df_reset[_edit_cols].reset_index(drop=True)
-            st.session_state.pop("revised_2026_df", None)
-            st.session_state.pop("use_revised_2026", None)
-            st.session_state.pop("dyn_pipeline", None)
-            st.rerun()
-
-    # ── Apply logic ───────────────────────────────────────────────────────
-    if apply_clicked:
-        st.session_state["use_revised_2026"] = use_revised
+    # ── Auto-Apply logic ───────────────────────────────────────────────────────
+    # If the user changed any cell in either data editor, directly trigger validation & re-run
+    _main_changed = not edited_df.equals(st.session_state["editor_df"])
+    _rev_changed  = not edited_2026_df.equals(st.session_state["revised_2026_df"])
+    
+    if _main_changed or _rev_changed:
         st.session_state["revised_2026_df"]  = edited_2026_df.copy()
 
         _err = None
@@ -902,8 +882,8 @@ with tab6:
         if _err:
             st.error(f"❌ {_err}")
         else:
-            # Override with Revised Estimates if checked
-            if use_revised and 2026 in _work["year_end"].values:
+            # Overwrite the 2026 row with Budget Estimates automatically
+            if 2026 in _work["year_end"].values:
                 _rev_row = edited_2026_df.iloc[0].to_dict()
                 for col, val in _rev_row.items():
                     if col in _work.columns and col != "year_end":
@@ -928,12 +908,6 @@ with tab6:
             # 9. Clear DSM pipeline so it re-fits on new data
             st.session_state.pop("dyn_pipeline", None)
 
-            _new_max = int(_work.index.max().year)
-            st.success(
-                f"✅ Data updated! Now using **{len(_work)} years** "
-                f"(FY{int(_work.index.min().year)}–FY{_new_max}). "
-                f"Forecast year → **FY{_new_max + 1}**."
-            )
             st.rerun()
 
     st.markdown("---")
