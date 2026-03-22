@@ -74,7 +74,7 @@ def forecast_plot(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Fiscal Year (Ends June 30)",
+        xaxis_title="Year",
         yaxis_title=y_label,
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
