@@ -260,7 +260,7 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
 with tab1:
     st.subheader("Total Tax Revenue Projection")
     if fore_total is not None and len(fore_total):
-        fig_total = forecast_plot(total_hist, fore_total, "Total Tax Revenue (Sum of Heads)", "PKR Million")
+        fig_total = forecast_plot(total_hist, fore_total, "Total Tax Revenue (Sum of Heads)")
         st.plotly_chart(fig_total, use_container_width=True)
         st.dataframe(
             forecast_table(fore_total).style.format({f"Forecast (PKR Billion)": "{:,.2f}"}),
