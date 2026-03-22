@@ -14,28 +14,35 @@ def forecast_plot(
     hist: pd.Series,
     fore: pd.DataFrame,
     title: str,
-    y_label: str = "PKR Million",
+    y_label: str = "PKR Billion",
 ) -> go.Figure:
     """
     Build a standard forecast plot with historical line + forecast + CI bands.
+    Converts millions to billions for plotting.
     """
     fig = go.Figure()
 
+    # Convert values to Billions for intuitive Plotly rendering
+    hist_b = hist / 1000.0
+    fore_b = fore / 1000.0
+
+    # Force X-axis to display June 30 (Fiscal Year End) instead of Jan 1
+    x_h = hist.index.map(lambda p: pd.Timestamp(year=p.year, month=6, day=30))
+    x_f = fore.index.map(lambda p: pd.Timestamp(year=p.year, month=6, day=30))
+
     # Historical
     fig.add_trace(go.Scatter(
-        x=hist.index.to_timestamp(),
-        y=hist.values,
+        x=x_h,
+        y=hist_b.values,
         mode="lines+markers",
         name="Historical",
         line=dict(color="#2d3436"),
     ))
 
-    x_f = fore.index.to_timestamp()
-
     # 95 % CI band
     fig.add_trace(go.Scatter(
         x=np.concatenate([x_f, x_f[::-1]]),
-        y=np.concatenate([fore["hi95"].values, fore["lo95"].values[::-1]]),
+        y=np.concatenate([fore_b["hi95"].values, fore_b["lo95"].values[::-1]]),
         fill="toself",
         fillcolor="rgba(9,132,227,0.08)",
         line=dict(color="rgba(255,255,255,0)"),
@@ -47,7 +54,7 @@ def forecast_plot(
     # 80 % CI band
     fig.add_trace(go.Scatter(
         x=np.concatenate([x_f, x_f[::-1]]),
-        y=np.concatenate([fore["hi80"].values, fore["lo80"].values[::-1]]),
+        y=np.concatenate([fore_b["hi80"].values, fore_b["lo80"].values[::-1]]),
         fill="toself",
         fillcolor="rgba(9,132,227,0.18)",
         line=dict(color="rgba(255,255,255,0)"),
@@ -59,7 +66,7 @@ def forecast_plot(
     # Point forecast
     fig.add_trace(go.Scatter(
         x=x_f,
-        y=fore["yhat"],
+        y=fore_b["yhat"],
         mode="lines+markers",
         name="Forecast",
         line=dict(dash="dash", color="#d63031"),
@@ -67,7 +74,7 @@ def forecast_plot(
 
     fig.update_layout(
         title=title,
-        xaxis_title="Year",
+        xaxis_title="Fiscal Year (Ends June 30)",
         yaxis_title=y_label,
         template="plotly_white",
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
