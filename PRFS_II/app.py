@@ -784,7 +784,7 @@ with tab6:
     st.info(
         "✏️ **Historical Data is fully editable.**  \n"
         "- Modify any cell or **Add a new row** at the bottom for future years.  \n"
-        "- To cleanly override **just** 2026, you can use the **Budget Estimates** section below.  \n"
+        "- **Note:** All models, graphs, and forecasts are powered *exclusively* by the main Data Preview table.  \n"
         "- The system will **automatically re-run** and validate adjustments when you type."
     )
 
@@ -882,13 +882,6 @@ with tab6:
         if _err:
             st.error(f"❌ {_err}")
         else:
-            # Overwrite the 2026 row with Budget Estimates automatically
-            if 2026 in _work["year_end"].values:
-                _rev_row = edited_2026_df.iloc[0].to_dict()
-                for col, val in _rev_row.items():
-                    if col in _work.columns and col != "year_end":
-                        _work.loc[_work["year_end"] == 2026, col] = val
-
             # 5. Sort by year, set PeriodIndex
             _work = _work.sort_values("year_end").reset_index(drop=True)
             _work.index = pd.PeriodIndex(_work["year_end"], freq="Y")
