@@ -376,8 +376,17 @@ with tab3:
             rho_sum = sum(vals[vals.index.str.startswith(f"{y_n}.L")])
             denom   = 1.0 - rho_sum
             lr_rows = []
-            for xc in head_bundle["spec"]["x"]:
-                gs = sum(vals[vals.index.str.startswith(f"{xc}.L")])
+            # Find actual exogenous variables present in the ARDL model
+            actual_x = []
+            for k in vals.index:
+                if k in ("const", "intercept") or k.startswith(f"{y_n}.L"):
+                    continue
+                col = k.split(".L")[0]
+                if col not in actual_x:
+                    actual_x.append(col)
+                    
+            for xc in actual_x:
+                gs = sum(vals[vals.index.str.startswith(f"{xc}.L")]) if any(k.startswith(f"{xc}.L") for k in vals.index) else vals.get(xc, 0.0)
                 lr_rows.append({"variable": xc, "elasticity": gs / denom if abs(denom) > 1e-4 else 0})
             st.markdown("### Implied Long-Run Elasticities (ECM)")
             st.markdown(f"**Error Correction Speed (α):** `{rho_sum - 1.0:.4f}`")
