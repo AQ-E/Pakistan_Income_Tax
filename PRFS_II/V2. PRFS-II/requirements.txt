@@ -1,0 +1,16 @@
+pandas
+numpy
+statsmodels
+pmdarima
+linearmodels
+scikit-learn
+openpyxl
+plotly
+streamlit>=1.24.0
+matplotlib
+seaborn
+arch
+scipy
+altair<5
+pydeck
+typing-extensions
