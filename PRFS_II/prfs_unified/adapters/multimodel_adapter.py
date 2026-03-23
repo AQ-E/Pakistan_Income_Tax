@@ -82,6 +82,15 @@ def get_cached_forecast(
 
         max_ar_lag = max(ar_lags.keys()) if ar_lags else 1
 
+        # ── AR Stability Enforcement ─────────────────────────────────────────
+        # If sum of AR coefficients >= 1, the model is explosive (unit-root or
+        # above). Scale them down to 0.95 to ensure mean-reversion at forecast
+        # time, effectively bounding the runaway growth projections.
+        ar_sum = sum(ar_lags.values())
+        if ar_sum >= 0.99:
+            scale = 0.95 / ar_sum
+            ar_lags = {k: v * scale for k, v in ar_lags.items()}
+
         # Seed y history from df_hist (user-edited values)
         if _df_hist is not None and y_name in _df_hist.columns:
             y_hist = list(_df_hist[y_name].dropna().values)
