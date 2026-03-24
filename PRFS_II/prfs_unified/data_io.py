@@ -142,7 +142,7 @@ def load_buoyancy() -> Optional[Dict]:
 @st.cache_data(show_spinner=False)
 def load_multimodel_assets() -> Tuple[Optional[Dict], Optional[Dict], Optional[pd.DataFrame]]:
     """Return (bundle, meta, df_hist) or (None, None, None) if absent."""
-    # Cache bust: force Streamlit to reload the updated ARDL model bundle
+    # Cache bust 2: Reload the highly simplified Customs ARDL(1,0) model
     pkl_path = _resolve("tax_models_bundle.pkl")
     json_path = _resolve("tax_models_meta.json")
     csv_path = _resolve("tax_prepared_data.csv")
