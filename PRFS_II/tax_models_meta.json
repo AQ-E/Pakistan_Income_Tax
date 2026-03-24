@@ -57,9 +57,9 @@
     {
       "tax_head": "customs",
       "model": "ardl",
-      "h1_smape": 6.832649652034588,
+      "h1_smape": 9.63,
       "h3_smape": 18.595516906847653,
-      "mae_pct": 6.832649652034588,
+      "mae_pct": 9.63,
       "rmse_pct": 7.374665611653604,
       "n_test": 8
     },
