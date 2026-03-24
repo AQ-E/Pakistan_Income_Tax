@@ -3,74 +3,120 @@
     {
       "tax_head": "dt",
       "model": "ardl",
-      "h1_smape": 9.603473721907847,
-      "h3_smape": 22.65262173364596,
-      "mae_pct": 9.603473721907847,
-      "rmse_pct": 11.571405624623603,
-      "n_test": 8
+      "h1_smape": 11.03,
+      "h3_smape": 34.45,
+      "rmse_pct": 10.95,
+      "n_test": 5,
+      "mae_pct": 11.03
     },
     {
       "tax_head": "dt",
       "model": "arimax",
-      "h1_smape": 10.154327522436809,
-      "h3_smape": 35.29262371419454,
-      "mae_pct": 10.154327522436809,
-      "rmse_pct": 10.729016266009433,
-      "n_test": 8
+      "h1_smape": 11.11,
+      "h3_smape": 48.52,
+      "rmse_pct": 9.5,
+      "n_test": 5,
+      "mae_pct": 11.11
+    },
+    {
+      "tax_head": "dt",
+      "model": "enet",
+      "h1_smape": null,
+      "h3_smape": null,
+      "rmse_pct": null,
+      "n_test": 0,
+      "mae_pct": null
     },
     {
       "tax_head": "gst",
       "model": "ardl",
-      "h1_smape": 12.977731810657867,
-      "h3_smape": 20.19236624271679,
-      "mae_pct": 12.977731810657867,
-      "rmse_pct": 13.265683272149605,
-      "n_test": 8
+      "h1_smape": 7.96,
+      "h3_smape": 11.21,
+      "rmse_pct": 13.08,
+      "n_test": 5,
+      "mae_pct": 7.96
     },
     {
       "tax_head": "gst",
       "model": "arimax",
-      "h1_smape": 11.701051471848926,
-      "h3_smape": 10.720570335231619,
-      "mae_pct": 11.701051471848926,
-      "rmse_pct": 15.228951109061484,
-      "n_test": 8
+      "h1_smape": 4.3,
+      "h3_smape": 8.16,
+      "rmse_pct": 5.03,
+      "n_test": 5,
+      "mae_pct": 4.3
+    },
+    {
+      "tax_head": "gst",
+      "model": "enet",
+      "h1_smape": null,
+      "h3_smape": null,
+      "rmse_pct": null,
+      "n_test": 0,
+      "mae_pct": null
     },
     {
       "tax_head": "fed",
       "model": "ardl",
-      "h1_smape": 9.258855046872634,
-      "h3_smape": 25.329437066280878,
-      "mae_pct": 9.258855046872634,
-      "rmse_pct": 14.311544127252892,
-      "n_test": 8
+      "h1_smape": 22.63,
+      "h3_smape": 47.25,
+      "rmse_pct": 25.98,
+      "n_test": 5,
+      "mae_pct": 22.63
     },
     {
       "tax_head": "fed",
       "model": "arimax",
-      "h1_smape": 10.85946569393817,
-      "h3_smape": 30.699016528873013,
-      "mae_pct": 10.85946569393817,
-      "rmse_pct": 16.623058882976242,
-      "n_test": 8
+      "h1_smape": 11.08,
+      "h3_smape": 45.7,
+      "rmse_pct": 18.3,
+      "n_test": 5,
+      "mae_pct": 11.08
+    },
+    {
+      "tax_head": "fed",
+      "model": "enet",
+      "h1_smape": null,
+      "h3_smape": null,
+      "rmse_pct": null,
+      "n_test": 0,
+      "mae_pct": null
     },
     {
       "tax_head": "customs",
       "model": "ardl",
-      "h1_smape": 10.0,
-      "h3_smape": 18.595516906847653,
-      "mae_pct": 10.0,
-      "rmse_pct": 11.0,
-      "n_test": 8
+      "h1_smape": 9.81,
+      "h3_smape": 27.57,
+      "rmse_pct": 13.21,
+      "n_test": 5,
+      "mae_pct": 9.81
     },
     {
       "tax_head": "customs",
       "model": "arimax",
-      "h1_smape": 13.665667213800386,
-      "h3_smape": 41.51461123261692,
-      "mae_pct": 13.665667213800386,
-      "rmse_pct": 13.839923157018703,
-      "n_test": 8
+      "h1_smape": 8.65,
+      "h3_smape": 15.69,
+      "rmse_pct": 16.69,
+      "n_test": 5,
+      "mae_pct": 8.65
+    },
+    {
+      "tax_head": "customs",
+      "model": "enet",
+      "h1_smape": null,
+      "h3_smape": null,
+      "rmse_pct": null,
+      "n_test": 0,
+      "mae_pct": null
     }
-  ]
+  ],
+  "data_span": {
+    "start": "1995",
+    "end": "2026",
+    "n": 31
+  },
+  "backtest_config": {
+    "n_test": 5,
+    "method": "expanding-window",
+    "selection_metric": "h1_smape"
+  }
 }
