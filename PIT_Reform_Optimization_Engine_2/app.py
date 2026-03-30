@@ -353,6 +353,11 @@ def _fmt_table(df):
     return out[['Income Range', 'MTR']]
 
 def _merged_table(base_df, prop_df):
+    # Guard: if either frame is empty, show whatever is available
+    if base_df is None or base_df.empty:
+        base_df = pd.DataFrame(columns=['lower_bound', 'upper_bound', 'marginal_rate'])
+    if prop_df is None or prop_df.empty:
+        return pd.DataFrame(columns=['Band', 'Base MTR', 'Proposed MTR', 'Δ (pp)'])
     all_b = sorted(set(
         list(base_df['lower_bound']) + list(prop_df['lower_bound']) +
         [b for b in base_df['upper_bound'] if np.isfinite(b)] +
@@ -503,8 +508,8 @@ if mode == "Policy Lab":
         num_rows="dynamic",
         use_container_width=True,
         column_config={
-            "lower_bound":    st.column_config.NumberColumn("Lower Bound (PKR)", format="%d",    min_value=0),
-            "upper_bound":    st.column_config.NumberColumn("Upper Bound (PKR)", format="%d"),
+            "lower_bound":    st.column_config.NumberColumn("Lower Bound (PKR)", format="localized", min_value=0),
+            "upper_bound":    st.column_config.NumberColumn("Upper Bound (PKR)", format="localized"),
             "marginal_rate":  st.column_config.NumberColumn("MTR (decimal)",      format="%.4f", min_value=0.0, max_value=1.0)
         }
     )
@@ -521,50 +526,121 @@ if mode == "Policy Lab":
 
     st.session_state.lab_slabs = edited_df
 
-    # ─── Surcharge Editor (directly below slabs) ───
-    st.markdown("#### 📌 Surcharge Settings")
+    # ─── Surcharge Slab Editor ───
+    st.markdown("#### 📌 Surcharge Slabs")
+    st.caption("Define surcharge rates by taxable income band. Once income falls in a band, that band's surcharge % is applied to the full normal tax.")
+
+    # Build default surcharge slabs from the system truth (single threshold → one slab)
     _sur_info_default = _get_truth_surcharge(lab_type)
-    _def_thresh = _sur_info_default.get('threshold', 0.0)
-    _def_rate   = _sur_info_default.get('rate', 0.0) * 100.0   # show as %
+    _def_sur_thresh   = _sur_info_default.get('threshold', 0.0)
+    _def_sur_rate     = _sur_info_default.get('rate', 0.0) * 100.0  # store as %
 
-    # Load edited values from session state (persist across reruns)
-    _init_thresh = st.session_state.get('lab_sur_thresh', _def_thresh)
-    _init_rate   = st.session_state.get('lab_sur_rate',   _def_rate)
+    def _default_sur_slabs(thresh, rate_pct):
+        """Build a 1-row surcharge slab DataFrame from legacy threshold+rate.
+        Upper bound is stored as NaN (blank) for open-ended; inf is never put
+        in the display DataFrame so the data_editor + button works correctly."""
+        if thresh > 0 and rate_pct > 0:
+            return pd.DataFrame([{
+                'lower_bound':    float(thresh),
+                'upper_bound':    float('nan'),   # blank = open-ended
+                'surcharge_rate': float(rate_pct)
+            }])
+        # Empty table with correct dtypes
+        return pd.DataFrame({
+            'lower_bound':    pd.Series([], dtype='float64'),
+            'upper_bound':    pd.Series([], dtype='float64'),
+            'surcharge_rate': pd.Series([], dtype='float64'),
+        })
 
-    sc1, sc2, sc3 = st.columns([2, 1, 1])
-    with sc1:
-        new_thresh = st.number_input(
-            "Surcharge Income Threshold (PKR)",
-            min_value=0.0, value=float(_init_thresh), step=500_000.0,
-            help="Surcharge applies only when Taxable Income ≥ this amount.",
-            key="sur_thresh_input"
-        )
-    with sc2:
-        new_rate = st.number_input(
-            "Surcharge Rate (%)",
-            min_value=0.0, max_value=100.0, value=float(_init_rate), step=1.0,
-            help="% added on top of normal tax for incomes above the threshold.",
-            key="sur_rate_input"
-        )
-    with sc3:
-        st.markdown("<br/>", unsafe_allow_html=True)  # vertical align
-        if st.button("🔄 Reset Surcharge"):
-            st.session_state['lab_sur_thresh'] = _def_thresh
-            st.session_state['lab_sur_rate']   = _def_rate
+    # Initialise / reset session state for surcharge slabs
+    # Use a separate key per type so switching types resets cleanly
+    _sur_key      = f'lab_sur_slabs_{lab_type}'
+    _sur_type_key = f'lab_sur_active_type'
+    if _sur_key not in st.session_state or st.session_state.get(_sur_type_key) != lab_type:
+        st.session_state[_sur_key]      = _default_sur_slabs(_def_sur_thresh, _def_sur_rate)
+        st.session_state[_sur_type_key] = lab_type
+
+    # Validate surcharge slabs
+    def _validate_sur_slabs(df):
+        """Returns (is_valid, error_message)."""
+        if df.empty:
+            return True, ""
+        df2 = df.dropna(subset=['lower_bound']).copy()
+        df2 = df2.sort_values('lower_bound').reset_index(drop=True)
+        for i in range(len(df2) - 1):
+            lo_next = df2.loc[i+1, 'lower_bound']
+            hi_this = df2.loc[i, 'upper_bound']
+            if pd.notna(hi_this) and not np.isinf(hi_this) and lo_next < hi_this:
+                return False, f"Surcharge slabs overlap: slab {i+1} upper bound ({hi_this:,.0f}) exceeds slab {i+2} lower bound ({lo_next:,.0f})."
+        return True, ""
+
+    _sur_edited = st.data_editor(
+        st.session_state[_sur_key],
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "lower_bound":    st.column_config.NumberColumn("Lower Bound (PKR)",   format="localized", min_value=0),
+            "upper_bound":    st.column_config.NumberColumn("Upper Bound (PKR)",   format="localized",
+                                                             help="Leave blank for open-ended (last slab)."),
+            "surcharge_rate": st.column_config.NumberColumn("Surcharge Rate (%)",  format="%.2f",
+                                                             min_value=0.0, max_value=100.0,
+                                                             help="% applied on top of normal tax.")
+        },
+        key=f"sur_editor_{lab_type}"
+    )
+
+    # Save edited table back to session state — keep as-is (NaN = open-ended)
+    # Do NOT store np.inf here; that breaks the data_editor dynamic rows feature
+    if not _sur_edited.empty:
+        _sur_edited = _sur_edited.sort_values('lower_bound', na_position='last').reset_index(drop=True)
+
+    st.session_state[_sur_key] = _sur_edited
+
+    # Reset button
+    _sr1, _sr2 = st.columns([4, 1])
+    with _sr2:
+        if st.button("🔄 Reset Surcharge", key="sur_reset_btn"):
+            st.session_state[_sur_key] = _default_sur_slabs(_def_sur_thresh, _def_sur_rate)
             st.rerun()
 
-    # Persist edited surcharge
-    st.session_state['lab_sur_thresh'] = new_thresh
-    st.session_state['lab_sur_rate']   = new_rate
+    # Validate
+    _sur_valid, _sur_err = _validate_sur_slabs(_sur_edited)
+    if not _sur_valid:
+        st.error(f"❌ Surcharge Slab Error: {_sur_err}")
 
-    # Show a quick summary of the effective surcharge rule
-    if new_thresh > 0 and new_rate > 0:
-        st.caption(f"⚡ Surcharge active: **{new_rate:.1f}%** on normal tax for taxable income ≥ **PKR {new_thresh:,.0f}**")
+    # Show active surcharge summary
+    if not _sur_edited.empty and _sur_valid:
+        _lines = []
+        for _, _sr in _sur_edited.iterrows():
+            _lo  = _sr['lower_bound']
+            _hi  = _sr['upper_bound']
+            _rt  = _sr['surcharge_rate']
+            if pd.isna(_lo) or pd.isna(_rt): continue
+            # NaN upper bound = open-ended (user left it blank)
+            if pd.isna(_hi) or np.isinf(float(_hi)):
+                _lines.append(f"**{_rt:.1f}%** on normal tax for income **above PKR {_lo:,.0f}**")
+            else:
+                _lines.append(f"**{_rt:.1f}%** on normal tax for income **PKR {_lo:,.0f} – {_hi:,.0f}**")
+        if _lines:
+            st.caption("⚡ Surcharge active: " + " | ".join(_lines))
+        else:
+            st.caption("⚡ No surcharge slabs defined.")
     else:
         st.caption("⚡ No surcharge currently applied.")
 
-    # Store effective surcharge so the results section can use it
-    _lab_sur = {'threshold': new_thresh, 'rate': new_rate / 100.0}
+    # Convert slab table → list-of-dicts for downstream use
+    def _sur_slabs_to_list(df):
+        """Convert surcharge slab DataFrame to list of dicts: {lower, upper, rate}."""
+        out = []
+        if df.empty: return out
+        df2 = df.dropna(subset=['lower_bound', 'surcharge_rate']).sort_values('lower_bound')
+        for _, r in df2.iterrows():
+            out.append({'lower': float(r['lower_bound']),
+                        'upper': float(r['upper_bound']) if pd.notna(r['upper_bound']) else np.inf,
+                        'rate':  float(r['surcharge_rate']) / 100.0})
+        return out
+
+    _lab_sur_slabs = _sur_slabs_to_list(_sur_edited)
 
     # ─── Filer Adjustment (same style as Surcharge Settings) ───
     st.markdown("#### 👥 Filer Count Adjustment")
@@ -595,6 +671,38 @@ if mode == "Policy Lab":
     else:
         st.caption("👥 No filer adjustment applied.")
 
+    # ─── Helper: apply surcharge slabs to simulation metrics ───────────────
+    def _apply_sur_to_metrics(metrics, sur_slabs):
+        """
+        Post-process metrics dict returned by run_manual_simulation /
+        compute_metrics to fold in slab-based surcharge.
+        Updates: tax, etr, delta_etr, revenue.
+        sur_slabs = list of {lower, upper, rate} where rate is 0–1 decimal.
+        """
+        if not sur_slabs:
+            return metrics
+        y   = metrics['y']
+        tax = metrics['tax'].copy()
+
+        # Vectorised surcharge rate for each income level on the grid
+        sur_rates = np.zeros(len(y))
+        for s in sur_slabs:
+            mask = (y >= s['lower']) & (y < s['upper'])
+            sur_rates[mask] = s['rate']
+
+        tax_sur       = tax * (1.0 + sur_rates)
+        etr_sur       = np.where(y > 0, tax_sur / y, 0.0)
+        delta_etr_sur = np.diff(etr_sur, prepend=0.0) * 100.0
+
+        m = dict(metrics)           # shallow copy — don't mutate original
+        m['tax']       = tax_sur
+        m['etr']       = etr_sur
+        m['delta_etr'] = delta_etr_sur
+        # Scale revenue by the average surcharge uplift (weighted by tax)
+        sur_uplift = (tax_sur.sum() / tax.sum()) if tax.sum() > 0 else 1.0
+        m['revenue']   = metrics.get('revenue', 0.0) * sur_uplift
+        return m
+
     # ─── Instant Recompute ───
     if edited_df.empty:
         st.warning("⚠️ Please add at least one tax slab.")
@@ -608,8 +716,10 @@ if mode == "Policy Lab":
         else:
             y_grid = np.arange(0, 20_000_001, 100_000)
             res = run_manual_simulation(sch_list, g_agg, y_grid, total_tax, base_list=base_list_calib)
+            # ★ Apply surcharge to metrics so ALL dashboard charts reflect it
+            res['metrics'] = _apply_sur_to_metrics(res['metrics'], _lab_sur_slabs)
             res.update({'g_type': lab_type, 'elapsed': 0.0, 'base_slabs_df': base_slabs_raw,
-                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
+                        'lab_sur_slabs': _lab_sur_slabs, 'lab_filer_scale': _filer_scale})
             st.session_state.results = {lab_type: res}
 
     # Button to Refine
@@ -618,8 +728,10 @@ if mode == "Policy Lab":
         sch_list = _schedule_to_list(edited_df)
         with st.spinner("Refining..."):
             res = optimize_schedule_constrained(g_agg, sch_list, total_tax * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
+            # ★ Apply surcharge to metrics so ALL dashboard charts reflect it
+            res['metrics'] = _apply_sur_to_metrics(res['metrics'], _lab_sur_slabs)
             res.update({'g_type': lab_type, 'elapsed': 0.1, 'base_slabs_df': base_slabs_raw,
-                        'lab_surcharge': _lab_sur, 'lab_filer_scale': _filer_scale})
+                        'lab_sur_slabs': _lab_sur_slabs, 'lab_filer_scale': _filer_scale})
             st.session_state.results = {lab_type: res}
             st.session_state.lab_slabs = res['schedule_df']
             st.rerun()
@@ -643,12 +755,30 @@ else:
         res = results[g_type]
         m, bm = res['metrics'], compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
 
+        # ── Helpers: slab-based surcharge ────────────────────────────────────
+        def _lookup_sur_rate(y_pp_val, sur_slabs):
+            """Return the surcharge rate (0–1 decimal) for a given per-person income."""
+            for s in sur_slabs:
+                if s['lower'] <= y_pp_val < s['upper']:
+                    return s['rate']
+            # open-ended last slab already has upper=inf, so covers everything above
+            return 0.0
+
+        def _apply_sur_slabs_vec(y_pp_arr, sur_slabs):
+            """Vectorised surcharge rate lookup → numpy array of rates (0–1)."""
+            rates = np.zeros(len(y_pp_arr))
+            for s in sur_slabs:
+                mask = (y_pp_arr >= s['lower']) & (y_pp_arr < s['upper'])
+                rates[mask] = s['rate']
+            return rates
+
         # ── Compute slab-formula NIT Estimated for base & proposed ──────────
-        def _nit_total(sch_list, y_arr, n_arr, sur_thresh, sur_rate):
+        def _nit_total(sch_list, y_arr, n_arr, sur_slabs):
             """NIT for aggregate-band data.
             y_arr = aggregate taxable income per band row.
             n_arr = number of persons per band row.
-            Computes per-person avg income, applies slabs, scales by N."""
+            Computes per-person avg income, applies slabs, scales by N.
+            sur_slabs = list of {lower, upper, rate} dicts (rate in 0–1)."""
             if len(sch_list) == 0 or len(y_arr) == 0:
                 return 0.0
             lws  = np.array([s['lower'] for s in sch_list])
@@ -661,16 +791,16 @@ else:
 
             # Per-person average income
             n_safe = np.where(n_arr > 0, n_arr, 1.0)
-            y_pp   = y_arr / n_safe   # per-person income
+            y_pp   = y_arr / n_safe
 
-            # Apply slabs to per-person income
+            # Apply income tax slabs
             idx    = np.clip(np.searchsorted(lws, y_pp, side='right') - 1, 0, len(sch_list)-1)
             bt_pp  = np.maximum(cum[idx] + (y_pp - lws[idx]) * rs[idx], 0.0)
 
-            # Surcharge: checked against per-person income
-            nit_pp = np.where(y_pp >= sur_thresh, bt_pp * (1.0 + sur_rate), bt_pp)
+            # Slab-based surcharge
+            sur_rt = _apply_sur_slabs_vec(y_pp, sur_slabs) if sur_slabs else np.zeros(len(y_pp))
+            nit_pp = bt_pp * (1.0 + sur_rt)
 
-            # Scale back: NIT for the whole band = per-person NIT × N
             return (nit_pp * n_arr).sum()
 
         # Load observation Y & N values for this g_type, filtered by year+type
@@ -712,27 +842,37 @@ else:
             if _n_col:
                 st.write("**Sample N values:**", _n_arr[:5])
                 st.write("**Sample Y values:**", _y_arr[:5])
-                st.write("**Sample Y/N (per-person income):**", (_y_arr[:5]/_n_arr[:5]))
+                min_len = min(5, len(_y_arr), len(_n_arr))
+                if min_len > 0:
+                    st.write("**Sample Y/N (per-person income):**", (_y_arr[:min_len]/_n_arr[:min_len]))
+                else:
+                    st.write("**Sample Y/N (per-person income):**", "Cannot compute (missing data)")
 
-        # Surcharge: lab-edited if available, else system truth for selected year
-        _sur        = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type, selected_year)
-        _sur_th     = _sur.get('threshold', 0.0)
-        _sur_rt     = _sur.get('rate', 0.0)
+        # Surcharge slabs: lab-edited if available, else build from system truth
+        def _truth_sur_to_slabs(g_type, year):
+            """Convert legacy single-threshold truth surcharge → slab list."""
+            s = _get_truth_surcharge(g_type, year)
+            th, rt = s.get('threshold', 0.0), s.get('rate', 0.0)
+            if th > 0 and rt > 0:
+                return [{'lower': th, 'upper': np.inf, 'rate': rt}]
+            return []
+
+        _prop_sur_slabs = res.get('lab_sur_slabs', None)
+        if _prop_sur_slabs is None:
+            _prop_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
 
         # Filer scale: only applied to proposed (base always uses original Y)
         _filer_scale = res.get('lab_filer_scale', 1.0)
-        _y_arr_prop  = _y_arr * _filer_scale   # scaled Y for proposed NIT
+        _y_arr_prop  = _y_arr * _filer_scale
 
-        # Base NIT Estimated  — truth slabs for selected year, original Y & N
-        _base_sch   = _get_truth_slabs(g_type, selected_year)
-        _base_sch   = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
-        _base_sur   = _get_truth_surcharge(g_type, selected_year)
-        _nit_base   = _nit_total(_base_sch, _y_arr, _n_arr,
-                                  _base_sur.get('threshold', 0.0), _base_sur.get('rate', 0.0))
+        # Base NIT Estimated — truth slabs + truth surcharge, original Y & N
+        _base_sch      = _get_truth_slabs(g_type, selected_year)
+        _base_sch      = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
+        _base_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
+        _nit_base      = _nit_total(_base_sch, _y_arr, _n_arr, _base_sur_slabs)
 
-        # Proposed NIT Estimated — proposed slabs + filer scale applied to Y
-        _nit_prop   = _nit_total(res['schedule_list'], _y_arr_prop, _n_arr * _filer_scale,
-                                  _sur_th, _sur_rt)
+        # Proposed NIT Estimated — proposed slabs + slab surcharge + filer scale
+        _nit_prop = _nit_total(res['schedule_list'], _y_arr_prop, _n_arr * _filer_scale, _prop_sur_slabs)
 
         _uplift_nit = (_nit_prop - _nit_base) / _nit_base if _nit_base > 0 else 0.0
 
@@ -791,14 +931,22 @@ else:
                 fig_detr = plot_detr_heatmap(build_heatmap_dataframe(m['delta_etr'], y_grid, bm['delta_etr']), colorscale=cmap)
                 st.plotly_chart(fig_detr, use_container_width=True)
 
-                # ─── Observation-level metrics using EDITED surcharge ───
+                # ─── Observation-level metrics using EDITED slab-based surcharge ───
                 try:
-                    _sur = res.get('lab_surcharge', None) or _get_truth_surcharge(g_type)
-                    sur_thresh = _sur.get('threshold', 0.0)
-                    sur_rate   = _sur.get('rate', 0.0)
+                    _obs_sur_slabs = res.get('lab_sur_slabs', None)
+                    if _obs_sur_slabs is None:
+                        _obs_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
 
-                    if sur_thresh > 0 and sur_rate > 0:
-                        st.info(f"⚡ **Surcharge applied:** {sur_rate:.1%} on normal tax for Taxable Income ≥ PKR {sur_thresh:,.0f}")
+                    # Show surcharge summary
+                    if _obs_sur_slabs:
+                        _sur_lines = []
+                        for _s in _obs_sur_slabs:
+                            _lo, _hi, _rt = _s['lower'], _s['upper'], _s['rate']
+                            if np.isinf(_hi):
+                                _sur_lines.append(f"{_rt:.1%} on normal tax for income above PKR {_lo:,.0f}")
+                            else:
+                                _sur_lines.append(f"{_rt:.1%} on normal tax for income PKR {_lo:,.0f}–{_hi:,.0f}")
+                        st.info("⚡ **Surcharge applied:** " + " | ".join(_sur_lines))
                     else:
                         st.info("⚡ No surcharge applied.")
 
@@ -819,8 +967,8 @@ else:
                         sch     = res['schedule_list']
 
                         y_obs    = grp_obs['Taxable Income (9100)'].values.astype(float)
-                        _nc   = _find_n_col(list(grp_obs.columns))
-                        n_obs = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
+                        _nc      = _find_n_col(list(grp_obs.columns))
+                        n_obs    = grp_obs[_nc].values.astype(float) if _nc else np.ones(len(y_obs))
                         n_safe   = np.where(n_obs > 0, n_obs, 1.0)
                         y_pp     = y_obs / n_safe
 
@@ -838,9 +986,9 @@ else:
                         base_tax_pp = np.maximum(base_cum[idx] + (y_pp - lowers[idx]) * mtr_obs, 0.0)
                         base_tax = base_tax_pp * n_obs
 
-                        nit_est  = np.where(y_pp >= sur_thresh,
-                                            base_tax * (1.0 + sur_rate),
-                                            base_tax)
+                        # Slab-based surcharge on observation data
+                        _obs_sur_rt = _apply_sur_slabs_vec(y_pp, _obs_sur_slabs) if _obs_sur_slabs else np.zeros(len(y_pp))
+                        nit_est  = base_tax * (1.0 + _obs_sur_rt)
                         etr_obs  = np.where(y_obs > 0, nit_est / y_obs, 0.0)
                         detr_obs = np.zeros(len(grp_obs))
                         if has_year and has_ttype:
@@ -924,28 +1072,43 @@ else:
                     fig_dist.update_yaxes(**_grid_y)
                     st.plotly_chart(fig_dist, use_container_width=True)
                 with dc4:
-                    _y_all    = m['y']
-                    _detr_all = m['delta_etr']
-                    _lbs      = [s['lower'] for s in res['schedule_list']]
-                    _detr_vals = []
-                    for lb in _lbs:
-                        idx_d = np.searchsorted(_y_all, lb)
-                        _detr_vals.append(float(_detr_all[min(idx_d, len(_detr_all)-1)]))
-                    _detr_df = pd.DataFrame({'Slab': [f"{lb/1e6:.1f}M" for lb in _lbs], 'ΔETR (pp)': _detr_vals})
-                    fig_detr_bar = px.bar(_detr_df, x='Slab', y='ΔETR (pp)', title="ΔETR Spike Detection",
-                                          color='ΔETR (pp)', color_continuous_scale='Oranges')
-                    fig_detr_bar.update_layout(height=350, **_chart_bg, **_margin)
-                    fig_detr_bar.update_xaxes(**_grid_x)
-                    fig_detr_bar.update_yaxes(**_grid_y)
-                    st.plotly_chart(fig_detr_bar, use_container_width=True)
+                    if res.get('schedule_list'):
+                        _y_all    = m['y']
+                        _detr_all = m['delta_etr']
+                        _lbs      = [s['lower'] for s in res['schedule_list']]
+                        _detr_vals = []
+                        for lb in _lbs:
+                            idx_d = np.searchsorted(_y_all, lb)
+                            _detr_vals.append(float(_detr_all[min(idx_d, len(_detr_all)-1)]))
+                        _detr_df = pd.DataFrame({'Slab': [f"{lb/1e6:.1f}M" for lb in _lbs], 'ΔETR (pp)': _detr_vals})
+                        fig_detr_bar = px.bar(_detr_df, x='Slab', y='ΔETR (pp)', title="ΔETR Spike Detection",
+                                              color='ΔETR (pp)', color_continuous_scale='Oranges')
+                        fig_detr_bar.update_layout(height=350, **_chart_bg, **_margin)
+                        fig_detr_bar.update_xaxes(**_grid_x)
+                        fig_detr_bar.update_yaxes(**_grid_y)
+                        st.plotly_chart(fig_detr_bar, use_container_width=True)
+                    else:
+                        st.info("No schedule data available for ΔETR chart.")
 
             with t_cmp:
                 cb, cp = st.columns(2)
                 with cb:
                     st.subheader("🏛️ Current Law")
-                    st.table(_fmt_table(res['base_slabs_df']))
+                    _base_fmt = _fmt_table(res['base_slabs_df'])
+                    if _base_fmt.empty:
+                        st.info("No current law slabs available for this taxpayer type.")
+                    else:
+                        st.table(_base_fmt)
                 with cp:
                     st.subheader("🧪 Your Lab Design")
-                    st.table(_fmt_table(res['schedule_df']))
+                    _prop_fmt = _fmt_table(res['schedule_df'])
+                    if _prop_fmt.empty:
+                        st.info("No proposed slabs to display.")
+                    else:
+                        st.table(_prop_fmt)
                 st.subheader("🔄 Detailed Transition View")
-                st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
+                try:
+                    st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
+                except Exception as _merge_err:
+                    st.info(f"Transition view unavailable: {_merge_err}")
+
