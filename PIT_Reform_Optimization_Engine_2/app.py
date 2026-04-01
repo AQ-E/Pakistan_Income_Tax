@@ -335,7 +335,7 @@ def load_truth_slabs(file_path):
 
     return slabs, surcharges
 
-def _fmt_table(df):
+def _fmt_table(df, filer_counts=None, avg_etrs=None):
     if df.empty: return df
     out = df.copy()
     # Filter zero-width or redundant slabs often found in raw data
@@ -350,9 +350,19 @@ def _fmt_table(df):
     
     out['Income Range'] = out.apply(_rng, axis=1)
     out['MTR'] = out['marginal_rate'].map('{:.2%}'.format)
-    return out[['Income Range', 'MTR']]
+    
+    # Add optional columns
+    cols = ['Income Range', 'MTR']
+    if filer_counts is not None:
+        out['Number of Filers'] = [f"{int(n):,}" for n in filer_counts]
+        cols.append('Number of Filers')
+    if avg_etrs is not None:
+        out['Avg ETR'] = [f"{e:.2%}" for e in avg_etrs]
+        cols.append('Avg ETR')
+    
+    return out[cols]
 
-def _merged_table(base_df, prop_df):
+def _merged_table(base_df, prop_df, base_collections=None, prop_collections=None):
     # Guard: if either frame is empty, show whatever is available
     if base_df is None or base_df.empty:
         base_df = pd.DataFrame(columns=['lower_bound', 'upper_bound', 'marginal_rate'])
@@ -372,13 +382,386 @@ def _merged_table(base_df, prop_df):
         pm = prop_df[(prop_df['lower_bound'] <= lo) & (prop_df['upper_bound'] > lo)]
         pr = pm.iloc[0]['marginal_rate'] if not pm.empty else None
         hi_s = "Above" if not np.isfinite(hi) else f"{hi:,.0f}"
-        rows.append({
+        
+        row_data = {
             'Band': f"{lo:,.0f} – {hi_s}",
             'Base MTR': f"{br:.2%}" if br is not None else "—",
             'Proposed MTR': f"{pr:.2%}" if pr is not None else "—",
             'Δ (pp)': f"{(pr-br)*100:+.2f}" if br is not None and pr is not None else "—",
-        })
+        }
+        
+        # Add collection columns if provided
+        if base_collections is not None and prop_collections is not None and j < len(base_collections):
+            base_coll = base_collections[j]
+            prop_coll = prop_collections[j]
+            delta_coll = prop_coll - base_coll
+            delta_coll_pct = (delta_coll / base_coll * 100) if base_coll > 0 else 0.0
+            
+            row_data['Base Collection'] = f"PKR {base_coll/1e9:,.2f}B"
+            row_data['Proposed Collection'] = f"PKR {prop_coll/1e9:,.2f}B"
+            row_data['Δ Collection'] = f"PKR {delta_coll/1e9:+,.2f}B"
+            row_data['Δ Collection (%)'] = f"{delta_coll_pct:+.2f}%"
+        
+        rows.append(row_data)
     return pd.DataFrame(rows)
+
+def _merged_table(base_df, prop_df, base_collections=None, prop_collections=None):
+    # Guard: if either frame is empty, show whatever is available
+    if base_df is None or base_df.empty:
+        base_df = pd.DataFrame(columns=['lower_bound', 'upper_bound', 'marginal_rate'])
+    if prop_df is None or prop_df.empty:
+        return pd.DataFrame(columns=['Band', 'Base MTR', 'Proposed MTR', 'Δ (pp)'])
+    all_b = sorted(set(
+        list(base_df['lower_bound']) + list(prop_df['lower_bound']) +
+        [b for b in base_df['upper_bound'] if np.isfinite(b)] +
+        [b for b in prop_df['upper_bound'] if np.isfinite(b)]
+    ))
+    rows = []
+    for j in range(len(all_b)):
+        lo = all_b[j]
+        hi = all_b[j + 1] if j + 1 < len(all_b) else np.inf
+        bm = base_df[(base_df['lower_bound'] <= lo) & (base_df['upper_bound'] > lo)]
+        br = bm.iloc[0]['marginal_rate'] if not bm.empty else None
+        pm = prop_df[(prop_df['lower_bound'] <= lo) & (prop_df['upper_bound'] > lo)]
+        pr = pm.iloc[0]['marginal_rate'] if not pm.empty else None
+        hi_s = "Above" if not np.isfinite(hi) else f"{hi:,.0f}"
+        
+        row_data = {
+            'Band': f"{lo:,.0f} – {hi_s}",
+            'Base MTR': f"{br:.2%}" if br is not None else "—",
+            'Proposed MTR': f"{pr:.2%}" if pr is not None else "—",
+            'Δ (pp)': f"{(pr-br)*100:+.2f}" if br is not None and pr is not None else "—",
+        }
+        
+        # Add collection columns if provided
+        if base_collections is not None and prop_collections is not None and j < len(base_collections):
+            base_coll = base_collections[j]
+            prop_coll = prop_collections[j]
+            delta_coll = prop_coll - base_coll
+            delta_coll_pct = (delta_coll / base_coll * 100) if base_coll > 0 else 0.0
+            
+            row_data['Base Collection'] = f"PKR {base_coll/1e9:,.2f}B"
+            row_data['Proposed Collection'] = f"PKR {prop_coll/1e9:,.2f}B"
+            row_data['Δ Collection'] = f"PKR {delta_coll/1e9:+,.2f}B"
+            row_data['Δ Collection (%)'] = f"{delta_coll_pct:+.2f}%"
+        
+        rows.append(row_data)
+    return pd.DataFrame(rows)
+
+def _merged_table_enhanced(base_df, prop_df, base_collections=None, prop_collections=None,
+                          base_filers=None, prop_filers=None, base_avg_etrs=None, prop_avg_etrs=None):
+    """Enhanced merged table with all base and proposed metrics."""
+    if base_df is None or base_df.empty:
+        base_df = pd.DataFrame(columns=['lower_bound', 'upper_bound', 'marginal_rate'])
+    if prop_df is None or prop_df.empty:
+        return pd.DataFrame(columns=['Band', 'Base MTR', 'Proposed MTR'])
+    
+    all_b = sorted(set(
+        list(base_df['lower_bound']) + list(prop_df['lower_bound']) +
+        [b for b in base_df['upper_bound'] if np.isfinite(b)] +
+        [b for b in prop_df['upper_bound'] if np.isfinite(b)]
+    ))
+    
+    rows = []
+    for j in range(len(all_b)):
+        lo = all_b[j]
+        hi = all_b[j + 1] if j + 1 < len(all_b) else np.inf
+        
+        # Skip negligible bands (less than 2 rupees wide)
+        if np.isfinite(hi) and (hi - lo) < 2:
+            continue
+        
+        # Find MTRs
+        bm = base_df[(base_df['lower_bound'] <= lo) & (base_df['upper_bound'] > lo)]
+        br = bm.iloc[0]['marginal_rate'] if not bm.empty else None
+        pm = prop_df[(prop_df['lower_bound'] <= lo) & (prop_df['upper_bound'] > lo)]
+        pr = pm.iloc[0]['marginal_rate'] if not pm.empty else None
+        
+        hi_s = "Above" if not np.isfinite(hi) else f"{hi:,.0f}"
+        
+        row_data = {
+            'Band': f"{lo:,.0f} – {hi_s}",
+            'Base MTR': f"{br:.2%}" if br is not None else "—",
+            'Proposed MTR': f"{pr:.2%}" if pr is not None else "—",
+            'Δ MTR (pp)': f"{(pr-br)*100:+.2f}" if br is not None and pr is not None else "—",
+        }
+        
+        # Add filer counts if provided
+        if base_filers is not None and j < len(base_filers):
+            row_data['Base Filers'] = f"{int(base_filers[j]):,}"
+        if prop_filers is not None and j < len(prop_filers):
+            row_data['Proposed Filers'] = f"{int(prop_filers[j]):,}"
+        
+        # Add avg ETRs if provided
+        if base_avg_etrs is not None and j < len(base_avg_etrs):
+            row_data['Base Avg ETR'] = f"{base_avg_etrs[j]:.2%}"
+        if prop_avg_etrs is not None and j < len(prop_avg_etrs):
+            row_data['Proposed Avg ETR'] = f"{prop_avg_etrs[j]:.2%}"
+        
+        # Add collection columns if provided
+        if base_collections is not None and prop_collections is not None and j < len(base_collections):
+            base_coll = base_collections[j]
+            prop_coll = prop_collections[j]
+            delta_coll = prop_coll - base_coll
+            delta_coll_pct = (delta_coll / base_coll * 100) if base_coll > 0 else 0.0
+            
+            row_data['Base Collection'] = f"PKR {base_coll/1e9:,.2f}B"
+            row_data['Proposed Collection'] = f"PKR {prop_coll/1e9:,.2f}B"
+            row_data['Δ Collection'] = f"PKR {delta_coll/1e9:+,.2f}B"
+            row_data['Δ Collection (%)'] = f"{delta_coll_pct:+.2f}%"
+        
+        rows.append(row_data)
+    return pd.DataFrame(rows)
+
+def _calculate_slab_filers(slabs_df, y_arr, n_arr):
+    """Calculate number of filers in each slab."""
+    if slabs_df.empty or len(y_arr) == 0:
+        return []
+    
+    n_safe = np.where(n_arr > 0, n_arr, 1.0)
+    y_pp = y_arr / n_safe  # Per-person income
+    
+    filer_counts = []
+    for _, slab in slabs_df.iterrows():
+        lower = slab['lower_bound']
+        upper = slab['upper_bound']
+        mask = (y_pp >= lower) & (y_pp < upper)
+        filers = n_arr[mask].sum()
+        filer_counts.append(filers)
+    
+    return filer_counts
+
+def _calculate_slab_avg_etr(slabs_df, schedule_list, y_arr, n_arr, sur_slabs):
+    """Calculate average ETR for each slab."""
+    if slabs_df.empty or len(y_arr) == 0:
+        return []
+    
+    n_safe = np.where(n_arr > 0, n_arr, 1.0)
+    y_pp = y_arr / n_safe
+    
+    # Prepare schedule data
+    lowers = np.array([s['lower'] for s in schedule_list])
+    rates = np.array([s['rate'] for s in schedule_list])
+    uppers = np.array([s['upper'] for s in schedule_list])
+    
+    # Build cumulative tax
+    cum = np.zeros(len(schedule_list))
+    for k in range(1, len(schedule_list)):
+        w = uppers[k-1] - lowers[k-1]
+        cum[k] = cum[k-1] + (0.0 if np.isinf(w) else w) * rates[k-1]
+    
+    avg_etrs = []
+    for _, slab in slabs_df.iterrows():
+        lower = slab['lower_bound']
+        upper = slab['upper_bound']
+        mask = (y_pp >= lower) & (y_pp < upper)
+        
+        if not np.any(mask):
+            avg_etrs.append(0.0)
+            continue
+        
+        # Calculate tax for observations in this slab
+        y_pp_slab = y_pp[mask]
+        n_slab = n_arr[mask]
+        y_slab = y_arr[mask]
+        
+        idx = np.clip(np.searchsorted(lowers, y_pp_slab, side='right') - 1, 0, len(schedule_list)-1)
+        base_tax_pp = np.maximum(cum[idx] + (y_pp_slab - lowers[idx]) * rates[idx], 0.0)
+        
+        # Apply surcharge
+        sur_rt = np.zeros(len(y_pp_slab))
+        if sur_slabs:
+            for s in sur_slabs:
+                mask_sur = (y_pp_slab >= s['lower']) & (y_pp_slab < s['upper'])
+                sur_rt[mask_sur] = s['rate']
+        
+        nit_pp = base_tax_pp * (1.0 + sur_rt)
+        total_tax = (nit_pp * n_slab).sum()
+        total_income = y_slab.sum()
+        
+        avg_etr = total_tax / total_income if total_income > 0 else 0.0
+        avg_etrs.append(avg_etr)
+    
+    return avg_etrs
+
+def _calculate_band_collections(base_df, prop_df, base_schedule, prop_schedule, 
+                                 y_arr, n_arr, base_sur_slabs, prop_sur_slabs, filer_scale):
+    """Calculate tax collections for each band in the merged transition view."""
+    if base_df is None or base_df.empty or prop_df is None or prop_df.empty:
+        return [], []
+    
+    # Get all breakpoints
+    all_b = sorted(set(
+        list(base_df['lower_bound']) + list(prop_df['lower_bound']) +
+        [b for b in base_df['upper_bound'] if np.isfinite(b)] +
+        [b for b in prop_df['upper_bound'] if np.isfinite(b)]
+    ))
+    
+    n_safe = np.where(n_arr > 0, n_arr, 1.0)
+    y_pp = y_arr / n_safe
+    
+    # Prepare base schedule
+    base_lowers = np.array([s['lower'] for s in base_schedule])
+    base_rates = np.array([s['rate'] for s in base_schedule])
+    base_uppers = np.array([s['upper'] for s in base_schedule])
+    base_cum = np.zeros(len(base_schedule))
+    for k in range(1, len(base_schedule)):
+        w = base_uppers[k-1] - base_lowers[k-1]
+        base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * base_rates[k-1]
+    
+    # Prepare proposed schedule
+    prop_lowers = np.array([s['lower'] for s in prop_schedule])
+    prop_rates = np.array([s['rate'] for s in prop_schedule])
+    prop_uppers = np.array([s['upper'] for s in prop_schedule])
+    prop_cum = np.zeros(len(prop_schedule))
+    for k in range(1, len(prop_schedule)):
+        w = prop_uppers[k-1] - prop_lowers[k-1]
+        prop_cum[k] = prop_cum[k-1] + (0.0 if np.isinf(w) else w) * prop_rates[k-1]
+    
+    base_collections = []
+    prop_collections = []
+    
+    for j in range(len(all_b)):
+        lo = all_b[j]
+        hi = all_b[j + 1] if j + 1 < len(all_b) else np.inf
+        
+        # Find observations in this band
+        mask = (y_pp >= lo) & (y_pp < hi)
+        
+        if not np.any(mask):
+            base_collections.append(0.0)
+            prop_collections.append(0.0)
+            continue
+        
+        y_pp_band = y_pp[mask]
+        n_band = n_arr[mask]
+        
+        # Base collection
+        idx_base = np.clip(np.searchsorted(base_lowers, y_pp_band, side='right') - 1, 0, len(base_schedule)-1)
+        base_tax_pp = np.maximum(base_cum[idx_base] + (y_pp_band - base_lowers[idx_base]) * base_rates[idx_base], 0.0)
+        
+        sur_rt_base = np.zeros(len(y_pp_band))
+        if base_sur_slabs:
+            for s in base_sur_slabs:
+                mask_sur = (y_pp_band >= s['lower']) & (y_pp_band < s['upper'])
+                sur_rt_base[mask_sur] = s['rate']
+        
+        nit_base_pp = base_tax_pp * (1.0 + sur_rt_base)
+        base_coll = (nit_base_pp * n_band).sum()
+        base_collections.append(base_coll)
+        
+        # Proposed collection (with filer scale)
+        n_band_scaled = n_band * filer_scale
+        idx_prop = np.clip(np.searchsorted(prop_lowers, y_pp_band, side='right') - 1, 0, len(prop_schedule)-1)
+        prop_tax_pp = np.maximum(prop_cum[idx_prop] + (y_pp_band - prop_lowers[idx_prop]) * prop_rates[idx_prop], 0.0)
+        
+        sur_rt_prop = np.zeros(len(y_pp_band))
+        if prop_sur_slabs:
+            for s in prop_sur_slabs:
+                mask_sur = (y_pp_band >= s['lower']) & (y_pp_band < s['upper'])
+                sur_rt_prop[mask_sur] = s['rate']
+        
+        nit_prop_pp = prop_tax_pp * (1.0 + sur_rt_prop)
+        prop_coll = (nit_prop_pp * n_band_scaled).sum()
+        prop_collections.append(prop_coll)
+    
+    return base_collections, prop_collections
+
+def _calculate_band_metrics(base_df, prop_df, base_schedule, prop_schedule, 
+                            y_arr, n_arr, base_sur_slabs, prop_sur_slabs, filer_scale):
+    """Calculate filer counts and avg ETR for each band in the merged transition view."""
+    if base_df is None or base_df.empty or prop_df is None or prop_df.empty:
+        return [], [], [], []
+    
+    # Get all breakpoints
+    all_b = sorted(set(
+        list(base_df['lower_bound']) + list(prop_df['lower_bound']) +
+        [b for b in base_df['upper_bound'] if np.isfinite(b)] +
+        [b for b in prop_df['upper_bound'] if np.isfinite(b)]
+    ))
+    
+    n_safe = np.where(n_arr > 0, n_arr, 1.0)
+    y_pp = y_arr / n_safe
+    
+    # Prepare schedules
+    base_lowers = np.array([s['lower'] for s in base_schedule])
+    base_rates = np.array([s['rate'] for s in base_schedule])
+    base_uppers = np.array([s['upper'] for s in base_schedule])
+    base_cum = np.zeros(len(base_schedule))
+    for k in range(1, len(base_schedule)):
+        w = base_uppers[k-1] - base_lowers[k-1]
+        base_cum[k] = base_cum[k-1] + (0.0 if np.isinf(w) else w) * base_rates[k-1]
+    
+    prop_lowers = np.array([s['lower'] for s in prop_schedule])
+    prop_rates = np.array([s['rate'] for s in prop_schedule])
+    prop_uppers = np.array([s['upper'] for s in prop_schedule])
+    prop_cum = np.zeros(len(prop_schedule))
+    for k in range(1, len(prop_schedule)):
+        w = prop_uppers[k-1] - prop_lowers[k-1]
+        prop_cum[k] = prop_cum[k-1] + (0.0 if np.isinf(w) else w) * prop_rates[k-1]
+    
+    base_filers = []
+    prop_filers = []
+    base_avg_etrs = []
+    prop_avg_etrs = []
+    
+    for j in range(len(all_b)):
+        lo = all_b[j]
+        hi = all_b[j + 1] if j + 1 < len(all_b) else np.inf
+        
+        # Find observations in this band
+        mask = (y_pp >= lo) & (y_pp < hi)
+        
+        if not np.any(mask):
+            base_filers.append(0.0)
+            prop_filers.append(0.0)
+            base_avg_etrs.append(0.0)
+            prop_avg_etrs.append(0.0)
+            continue
+        
+        y_pp_band = y_pp[mask]
+        n_band = n_arr[mask]
+        y_band = y_arr[mask]
+        
+        # Filer counts
+        base_filer_count = n_band.sum()
+        prop_filer_count = (n_band * filer_scale).sum()
+        base_filers.append(base_filer_count)
+        prop_filers.append(prop_filer_count)
+        
+        # Base avg ETR
+        idx_base = np.clip(np.searchsorted(base_lowers, y_pp_band, side='right') - 1, 0, len(base_schedule)-1)
+        base_tax_pp = np.maximum(base_cum[idx_base] + (y_pp_band - base_lowers[idx_base]) * base_rates[idx_base], 0.0)
+        
+        sur_rt_base = np.zeros(len(y_pp_band))
+        if base_sur_slabs:
+            for s in base_sur_slabs:
+                mask_sur = (y_pp_band >= s['lower']) & (y_pp_band < s['upper'])
+                sur_rt_base[mask_sur] = s['rate']
+        
+        nit_base_pp = base_tax_pp * (1.0 + sur_rt_base)
+        base_total_tax = (nit_base_pp * n_band).sum()
+        base_total_income = y_band.sum()
+        base_avg_etr = base_total_tax / base_total_income if base_total_income > 0 else 0.0
+        base_avg_etrs.append(base_avg_etr)
+        
+        # Proposed avg ETR
+        idx_prop = np.clip(np.searchsorted(prop_lowers, y_pp_band, side='right') - 1, 0, len(prop_schedule)-1)
+        prop_tax_pp = np.maximum(prop_cum[idx_prop] + (y_pp_band - prop_lowers[idx_prop]) * prop_rates[idx_prop], 0.0)
+        
+        sur_rt_prop = np.zeros(len(y_pp_band))
+        if prop_sur_slabs:
+            for s in prop_sur_slabs:
+                mask_sur = (y_pp_band >= s['lower']) & (y_pp_band < s['upper'])
+                sur_rt_prop[mask_sur] = s['rate']
+        
+        nit_prop_pp = prop_tax_pp * (1.0 + sur_rt_prop)
+        prop_total_tax = (nit_prop_pp * n_band * filer_scale).sum()
+        prop_total_income = (y_band * filer_scale).sum()
+        prop_avg_etr = prop_total_tax / prop_total_income if prop_total_income > 0 else 0.0
+        prop_avg_etrs.append(prop_avg_etr)
+    
+    return base_filers, prop_filers, base_avg_etrs, prop_avg_etrs
 
 def _get_historical_data(grid_df, g_type, target_y):
     t_norm = 'Salaried' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Non_Salaried'
@@ -1091,24 +1474,58 @@ else:
                         st.info("No schedule data available for ΔETR chart.")
 
             with t_cmp:
+                # Calculate additional metrics for tables
+                # Get base and proposed schedules as lists
+                base_schedule_list = _schedule_to_list(res['base_slabs_df']) if not res['base_slabs_df'].empty else []
+                prop_schedule_list = res.get('schedule_list', [])
+                
+                # Calculate filer counts per slab
+                base_filers = _calculate_slab_filers(res['base_slabs_df'], _y_arr, _n_arr)
+                prop_filers = _calculate_slab_filers(res['schedule_df'], _y_arr * _filer_scale, _n_arr * _filer_scale)
+                
+                # Calculate average ETR per slab
+                base_avg_etrs = _calculate_slab_avg_etr(res['base_slabs_df'], base_schedule_list, _y_arr, _n_arr, _base_sur_slabs)
+                prop_avg_etrs = _calculate_slab_avg_etr(res['schedule_df'], prop_schedule_list, _y_arr * _filer_scale, _n_arr * _filer_scale, _prop_sur_slabs)
+                
+                # Calculate band collections for detailed transition view
+                base_band_collections, prop_band_collections = _calculate_band_collections(
+                    res['base_slabs_df'], res['schedule_df'],
+                    base_schedule_list, prop_schedule_list,
+                    _y_arr, _n_arr,
+                    _base_sur_slabs, _prop_sur_slabs,
+                    _filer_scale
+                )
+                
+                # Calculate band-level filers and avg ETRs for detailed view
+                base_band_filers, prop_band_filers, base_band_avg_etrs, prop_band_avg_etrs = _calculate_band_metrics(
+                    res['base_slabs_df'], res['schedule_df'],
+                    base_schedule_list, prop_schedule_list,
+                    _y_arr, _n_arr,
+                    _base_sur_slabs, _prop_sur_slabs,
+                    _filer_scale
+                )
+                
                 cb, cp = st.columns(2)
                 with cb:
                     st.subheader("🏛️ Current Law")
-                    _base_fmt = _fmt_table(res['base_slabs_df'])
+                    _base_fmt = _fmt_table(res['base_slabs_df'], base_filers, base_avg_etrs)
                     if _base_fmt.empty:
                         st.info("No current law slabs available for this taxpayer type.")
                     else:
                         st.table(_base_fmt)
                 with cp:
                     st.subheader("🧪 Your Lab Design")
-                    _prop_fmt = _fmt_table(res['schedule_df'])
+                    _prop_fmt = _fmt_table(res['schedule_df'], prop_filers, prop_avg_etrs)
                     if _prop_fmt.empty:
                         st.info("No proposed slabs to display.")
                     else:
                         st.table(_prop_fmt)
                 st.subheader("🔄 Detailed Transition View")
                 try:
-                    st.table(_merged_table(res['base_slabs_df'], res['schedule_df']))
+                    st.table(_merged_table_enhanced(res['base_slabs_df'], res['schedule_df'], 
+                                                     base_band_collections, prop_band_collections,
+                                                     base_band_filers, prop_band_filers,
+                                                     base_band_avg_etrs, prop_band_avg_etrs))
                 except Exception as _merge_err:
                     st.info(f"Transition view unavailable: {_merge_err}")
 
