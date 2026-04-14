@@ -1306,7 +1306,7 @@ else:
 
                 st.markdown("---")
                 y_grid = m['y']
-                cmap = 'Viridis' if 'salaried' in g_type.lower() and 'non' not in g_type.lower() else 'Inferno'
+                cmap = 'Viridis' if 'salaried' in g_type.lower() else 'Inferno'
 
                 fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
                 st.plotly_chart(fig_etr, use_container_width=True)
