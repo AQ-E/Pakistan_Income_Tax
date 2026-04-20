@@ -257,14 +257,26 @@ def _get_truth_slabs(g_type, year=None):
 def _get_truth_surcharge(g_type, year=None):
     """Year-aware, case-insensitive lookup into TRUTH_SURCHARGES."""
     canon = _canon_type(g_type)
+    
+    def _apply_salaried_override(val):
+        # Override to 9% for Salaried taxpayers who have a surcharge
+        if canon == 'Salaried' and val.get('threshold', 0) > 0:
+            val['rate'] = 0.09
+        return val
+        
     if year is not None:
         key = (int(year), canon)
         if key in TRUTH_SURCHARGES:
-            return TRUTH_SURCHARGES[key]
+            return _apply_salaried_override(TRUTH_SURCHARGES[key].copy())
     # Fallback
     for (yr, tp), v in TRUTH_SURCHARGES.items():
         if _norm(tp) == _norm(canon):
-            return v
+            return _apply_salaried_override(v.copy())
+            
+    # Default fallback for Salaried if not found
+    if canon == 'Salaried':
+        return {'threshold': 10000000.0, 'rate': 0.09}
+        
     return {'threshold': 0.0, 'rate': 0.0}
 
 @st.cache_data
@@ -1136,7 +1148,13 @@ else:
     tabs = st.tabs(tab_labels)
     for i, g_type in enumerate(tab_labels):
         res = results[g_type]
-        m, bm = res['metrics'], compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
+        m = res['metrics']
+        bm = compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
+        
+        # Apply surcharge to base metrics (bm) for accurate visualization comparison
+        _s = _get_truth_surcharge(g_type, selected_year)
+        _base_sur_for_bm = [{'lower': _s['threshold'], 'upper': np.inf, 'rate': _s['rate']}] if _s.get('threshold', 0.0) > 0 and _s.get('rate', 0.0) > 0 else []
+        bm = _apply_sur_to_metrics(bm, _base_sur_for_bm)
 
         # ── Helpers: slab-based surcharge ────────────────────────────────────
         def _lookup_sur_rate(y_pp_val, sur_slabs):
@@ -1263,7 +1281,7 @@ else:
             if _uplift_nit < -0.001:
                 st.warning(f"⚠️ **Proposed NIT below baseline** (PKR {_nit_prop/1e9:,.1f}B < PKR {_nit_base/1e9:,.1f}B)")
 
-            t_dash, t_ana, t_cmp = st.tabs(["📈 Dashboard", "📊 ETR & CETR Heat Maps", "📋 Schedule Comparison"])
+            t_dash, t_ana, t_cmp, t_calc = st.tabs(["📈 Dashboard", "📊 ETR & CETR Heat Maps", "📋 Schedule Comparison", "🧮 Tax Calculator"])
             with t_ana:
                 st.markdown(f"""
 <div class="imf-section-tag">Analysis Results</div>
@@ -1306,7 +1324,7 @@ else:
 
                 st.markdown("---")
                 y_grid = m['y']
-                cmap = 'Viridis' if 'salaried' in g_type.lower() else 'Inferno'
+                cmap = 'Viridis'
 
                 fig_etr = plot_etr_heatmap(build_heatmap_dataframe(m['etr'], y_grid, bm['etr']), colorscale=cmap)
                 st.plotly_chart(fig_etr, use_container_width=True)
@@ -1528,4 +1546,48 @@ else:
                                                      base_band_avg_etrs, prop_band_avg_etrs))
                 except Exception as _merge_err:
                     st.info(f"Transition view unavailable: {_merge_err}")
+
+            with t_calc:
+                st.markdown(f"""
+<div class="imf-section-tag">Tax Calculator</div>
+<h3 style="margin-top:6px;">🧮 {g_type} Tax Calculator</h3>
+<p>Enter an annual income to see the tax liability under both Current Law and your Lab Design.</p>
+""", unsafe_allow_html=True)
+                
+                calc_income = st.number_input("Enter Annual Taxable Income (PKR)", min_value=0.0, value=1200000.0, step=50000.0, key=f"calc_in_{g_type}")
+                
+                # Use scalar arrays to leverage existing _nit_total logic
+                _y_val = np.array([calc_income])
+                _n_val = np.array([1.0])
+                
+                _tax_base_val = _nit_total(_base_sch, _y_val, _n_val, _base_sur_slabs)
+                _tax_prop_val = _nit_total(res['schedule_list'], _y_val, _n_val, _prop_sur_slabs)
+                
+                _diff_val = _tax_prop_val - _tax_base_val
+                _etr_base = (_tax_base_val / calc_income) if calc_income > 0 else 0.0
+                _etr_prop = (_tax_prop_val / calc_income) if calc_income > 0 else 0.0
+
+                c1, c2, c3 = st.columns(3)
+                with c1:
+                    st.metric("Current Law Tax", f"PKR {_tax_base_val:,.0f}", help=f"Effective Tax Rate: {_etr_base:.2%}")
+                with c2:
+                    st.metric("Lab Design Tax", f"PKR {_tax_prop_val:,.0f}", delta=f"{_diff_val:,.0f}", delta_color="inverse", help=f"Effective Tax Rate: {_etr_prop:.2%}")
+                with c3:
+                    if _tax_base_val > 0:
+                        _perc_chg = (_diff_val / _tax_base_val)
+                        st.metric("Tax Change (%)", f"{_perc_chg:+.1%}")
+                    else:
+                        st.metric("Tax Change (%)", "N/A")
+
+                # Visual comparison
+                calc_df = pd.DataFrame({
+                    'Scenario': ['Current Law', 'Lab Design'],
+                    'Tax Amount': [_tax_base_val, _tax_prop_val]
+                })
+                import plotly.express as px
+                fig_calc = px.bar(calc_df, x='Scenario', y='Tax Amount', color='Scenario',
+                                 color_discrete_map={'Current Law': '#6c757d', 'Lab Design': '#003B5C'},
+                                 text_auto=',.0f')
+                fig_calc.update_layout(showlegend=False, height=300, margin=dict(t=20, b=20, l=20, r=20))
+                st.plotly_chart(fig_calc, use_container_width=True)
 
