@@ -228,10 +228,7 @@ _TYPE_CANON = {
     'non salaried':  'Non-Salaried',
     'non-salaried':  'Non-Salaried',
     'aop':           'AOP',
-    'nsc':           'NSC',          # raw label in Excel
-    'consolidated':  'NSC',          # treat consolidated as NSC
     'non_salaried':  'Non-Salaried',
-    'non salaried consolidated': 'NSC',
 }
 
 def _canon_type(raw):
@@ -273,15 +270,12 @@ def load_truth_slabs(file_path):
         'non-salaried':           'Non-Salaried',
         'non_salaried':           'Non-Salaried',
         'aop':                    'AOP',
-        'nsc':                    'NSC',          # Non-Salaried Consolidated
-        'consolidated':           'NSC',
-        'non salaried consolidated': 'NSC',
     }
     def _local_canon(raw):
         return _INLINE_CANON.get(str(raw).strip().lower(), str(raw).strip().title())
 
     for (year, raw_ttype), g in df.groupby(['Year', 'Tax_Type']):
-        ttype = _local_canon(raw_ttype)   # e.g. 'NSC' -> 'NSC', 'Non_salaried' -> 'Non-Salaried'
+        ttype = _local_canon(raw_ttype)   # e.g. 'Non_salaried' -> 'Non-Salaried'
         key   = (int(year), ttype)
 
         g_slabs  = []
@@ -880,7 +874,6 @@ with st.sidebar:
         run_sal = st.checkbox("Optimize Salaried", value=True)
         run_nsal = st.checkbox("Optimize Non-Salaried", value=True)
         run_aop = st.checkbox("Optimize AOP", value=True)
-        run_cons = st.checkbox("Optimize NSC", value=False)
         
         if st.button("🚀 Auto-Optimize Policy", type="primary"):
             st.session_state.results = {}
@@ -889,7 +882,6 @@ with st.sidebar:
             if run_sal: groups.append('Salaried')
             if run_nsal: groups.append('Non-Salaried')
             if run_aop: groups.append('AOP')
-            if run_cons: groups.append('NSC')
 
             for g_type in groups:
                 df_slabs_agg['_norm'] = df_slabs_agg['taxpayer_type'].apply(_norm)
@@ -916,8 +908,7 @@ with st.sidebar:
 
     else:  # Policy Lab — this runs when mode != "Auto Optimize"
         st.markdown("### Policy Lab Setup")
-        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP", "NSC"])
-        # NSC is stored directly as 'NSC' — no remapping needed
+        lab_type = st.selectbox("Taxpayer Type", ["Salaried", "Non-Salaried", "AOP"])
 
         
         # Track active lab type to handle switching
@@ -1241,8 +1232,8 @@ else:
             return (nit_pp * n_arr).sum()
 
         # Load observation Y & N values for this g_type, filtered by year+type
-        # Raw Type_Tax values in uploaded file: 'S', 'NS', 'AOP', 'NSC'
-        _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
+        # Raw Type_Tax values in uploaded file: 'S', 'NS', 'AOP'
+        _type_map   = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP'}
         _tgt        = _type_map.get(g_type, g_type)
         _raw        = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
         # Filter by Type_Tax
@@ -1387,7 +1378,7 @@ else:
                     else:
                         st.info("⚡ No surcharge applied.")
 
-                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP', 'NSC': 'NSC'}
+                    type_mapping = {'Salaried': 'S', 'Non-Salaried': 'NS', 'AOP': 'AOP'}
                     tgt_raw  = type_mapping.get(g_type, g_type)
                     raw_obs  = pd.read_excel(_io.BytesIO(st.session_state.uploaded_obs_bytes), engine='openpyxl')
                     grp_obs  = raw_obs[raw_obs['Type_Tax'] == tgt_raw].copy() if 'Type_Tax' in raw_obs.columns else raw_obs.copy()
