@@ -21,7 +21,8 @@ importlib.reload(src.viz)
 
 from src.io import load_slab_data, load_grid_data, get_data_paths
 from src.solver import (optimize_schedule, compute_metrics, _schedule_to_list,
-                        validate_schedule, run_manual_simulation, optimize_schedule_constrained)
+                        validate_schedule, run_manual_simulation, optimize_schedule_constrained,
+                        _estimate_revenue)
 from src.viz import (build_heatmap_dataframe, plot_etr_heatmap,
                      plot_detr_heatmap, plot_etr_curve, plot_progressivity_slope)
 
@@ -239,49 +240,26 @@ def _canon_type(raw):
     return _TYPE_CANON.get(n, str(raw).strip().title())
 
 def _get_truth_slabs(g_type, year=None):
-    """Year-aware, case-insensitive lookup into TRUTH_SLABS.
-    Falls back to any year if the requested year is not found."""
-    canon = _canon_type(g_type)
-    # Try exact year first
-    if year is not None:
-        key = (int(year), canon)
-        if key in TRUTH_SLABS:
-            v = TRUTH_SLABS[key]
-            return v.copy() if not v.empty else None
-    # Fallback: any year, matching type
-    for (yr, tp), v in TRUTH_SLABS.items():
-        if _norm(tp) == _norm(canon):
-            return v.copy() if not v.empty else None
-    return None
+    """Year-aware lookup into TRUTH_SLABS. Returns None if (year, type) is not in the
+    slab file — no silent fallback to a different year."""
+    if year is None:
+        return None
+    key = (int(year), _canon_type(g_type))
+    v = TRUTH_SLABS.get(key)
+    return v.copy() if v is not None and not v.empty else None
 
 def _get_truth_surcharge(g_type, year=None):
-    """Year-aware, case-insensitive lookup into TRUTH_SURCHARGES."""
-    canon = _canon_type(g_type)
-    
-    def _apply_salaried_override(val):
-        # Override to 9% for Salaried taxpayers who have a surcharge
-        if canon == 'Salaried' and val.get('threshold', 0) > 0:
-            val['rate'] = 0.09
-        return val
-        
+    """Year-aware lookup into TRUTH_SURCHARGES, taken purely from the slab file.
+    Returns zero surcharge if (year, type) is not found."""
     if year is not None:
-        key = (int(year), canon)
+        key = (int(year), _canon_type(g_type))
         if key in TRUTH_SURCHARGES:
-            return _apply_salaried_override(TRUTH_SURCHARGES[key].copy())
-    # Fallback
-    for (yr, tp), v in TRUTH_SURCHARGES.items():
-        if _norm(tp) == _norm(canon):
-            return _apply_salaried_override(v.copy())
-            
-    # Default fallback for Salaried if not found
-    if canon == 'Salaried':
-        return {'threshold': 10000000.0, 'rate': 0.09}
-        
+            return dict(TRUTH_SURCHARGES[key])
     return {'threshold': 0.0, 'rate': 0.0}
 
 @st.cache_data
 def load_truth_slabs(file_path):
-    """Parse PIT_slabs_2025.xlsx into year-aware dicts.
+    """Parse the PIT slab file (PIT_slabs_2026.xlsx) into year-aware dicts.
     Keys are (year, canonical_type) tuples."""
     df = pd.read_excel(file_path, engine='openpyxl')
     slabs      = {}   # {(year, type): DataFrame}
@@ -794,6 +772,65 @@ try:
 except Exception as e:
     TRUTH_SLABS, TRUTH_SURCHARGES = {}, {}
 
+REGIME_YEARS = sorted({int(yr) for (yr, _) in TRUTH_SLABS.keys()})
+
+def _fy_label(year):
+    """2027 -> '2027 (FY2026-27)'. Same year convention as the slab file."""
+    y = int(year)
+    return f"{y} (FY{y-1}-{str(y)[-2:]})"
+
+def _regime_base_revenue(g_agg, g_type, data_year, regime_year, actual_tax, regime_slabs_df):
+    """Base revenue under the chosen slab regime, applied to the loaded data year.
+
+    calib_factor = actual tax (data year) / simulated tax under the data year's own slabs
+    base_revenue = calib_factor x simulated tax under the chosen regime's slabs
+    If regime == data year this equals actual tax exactly (same as before).
+    Returns (base_revenue, calib_factor, warning_or_None)."""
+    regime_list = _schedule_to_list(regime_slabs_df)
+    sim_regime = _estimate_revenue(regime_list, g_agg)
+    data_slabs = _get_truth_slabs(g_type, data_year)
+    if data_slabs is None:
+        return sim_regime, 1.0, (f"No slabs for data year {data_year} in the slab file - "
+                                 f"base revenue is uncalibrated slab-formula tax.")
+    sim_data = _estimate_revenue(_schedule_to_list(data_slabs), g_agg)
+    if sim_data <= 0:
+        return sim_regime, 1.0, "Simulated data-year tax is zero - base revenue is uncalibrated."
+    factor = actual_tax / sim_data
+    return factor * sim_regime, factor, None
+
+# ─── Helper: apply surcharge slabs to simulation metrics ───────────────
+def _apply_sur_to_metrics(metrics, sur_slabs):
+    """
+    Post-process metrics dict returned by run_manual_simulation /
+    compute_metrics to fold in slab-based surcharge.
+    Updates: tax, etr, delta_etr, revenue.
+    sur_slabs = list of {lower, upper, rate} where rate is 0–1 decimal.
+    """
+    if not sur_slabs:
+        return metrics
+    y   = metrics['y']
+    tax = metrics['tax'].copy()
+
+    # Vectorised surcharge rate for each income level on the grid
+    sur_rates = np.zeros(len(y))
+    for s in sur_slabs:
+        mask = (y >= s['lower']) & (y < s['upper'])
+        sur_rates[mask] = s['rate']
+
+    tax_sur       = tax * (1.0 + sur_rates)
+    etr_sur       = np.where(y > 0, tax_sur / y, 0.0)
+    delta_etr_sur = np.diff(etr_sur, prepend=0.0) * 100.0
+
+    m = dict(metrics)           # shallow copy — don't mutate original
+    m['tax']       = tax_sur
+    m['etr']       = etr_sur
+    m['delta_etr'] = delta_etr_sur
+    # Scale revenue by the average surcharge uplift (weighted by tax)
+    sur_uplift = (tax_sur.sum() / tax.sum()) if tax.sum() > 0 else 1.0
+    m['revenue']   = metrics.get('revenue', 0.0) * sur_uplift
+    return m
+
+
 # ───────────────────────── Sidebar ─────────────────────────
 with st.sidebar:
     # — File info & change option —
@@ -811,7 +848,27 @@ with st.sidebar:
     st.markdown("---")
     st.header("📋 General Settings")
     years_avail = sorted(df_slabs_agg['year'].unique(), reverse=True)
-    selected_year = st.selectbox("Baseline Year", years_avail)
+    selected_year = st.selectbox("Data Year (observations)", years_avail,
+                                 help="Year of the uploaded observations used for simulation.")
+
+    if not REGIME_YEARS:
+        st.error("❌ Slab file could not be loaded — check PIT_slabs_2026.xlsx.")
+        st.stop()
+    _def_regime_idx = (REGIME_YEARS.index(int(selected_year))
+                       if int(selected_year) in REGIME_YEARS else len(REGIME_YEARS) - 1)
+    base_regime_year = st.selectbox("Base Slab Regime", REGIME_YEARS, index=_def_regime_idx,
+                                    format_func=_fy_label,
+                                    help="Slab rates and surcharge used as the base. "
+                                         "All changes are compared against this regime.")
+    if int(base_regime_year) != int(selected_year):
+        st.caption(f"ℹ️ Applying {_fy_label(base_regime_year)} slabs to {selected_year} data.")
+
+    # Clear stale results / lab tables when the data year or base regime changes
+    _ctx = (selected_year, base_regime_year)
+    if st.session_state.get('_ctx') != _ctx:
+        st.session_state['_ctx'] = _ctx
+        st.session_state.results = {}
+        st.session_state.lab_slabs = None
 
     uplift_target = 0.0  # Policy Lab has no revenue target; Auto Optimize sets this below
 
@@ -841,15 +898,18 @@ with st.sidebar:
                 if g_agg.empty: continue
                 total_tax = g_agg['normal_income_tax_920000'].sum()
                 
-                # Use year-aware slab lookup from PIT_slabs_2025.xlsx
-                base_slabs = _get_truth_slabs(g_type, selected_year)
+                # Base = chosen slab regime
+                base_slabs = _get_truth_slabs(g_type, base_regime_year)
                 if base_slabs is None:
-                    base_slabs = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-                    if base_slabs['marginal_rate'].max() > 1.0: base_slabs['marginal_rate'] /= 100.0
+                    st.warning(f"⚠️ No {g_type} slabs for {_fy_label(base_regime_year)}; skipped.")
+                    continue
+                base_rev, _calib, _cwarn = _regime_base_revenue(g_agg, g_type, selected_year,
+                                                                base_regime_year, total_tax, base_slabs)
+                if _cwarn: st.warning(f"⚠️ {g_type}: {_cwarn}")
                 
                 with st.spinner(f"⏳ Optimizing {g_type} …"):
                     t0 = time.time()
-                    res = optimize_schedule(g_agg, base_slabs, total_tax, y_grid, total_tax * (1 + uplift_target/100))
+                    res = optimize_schedule(g_agg, base_slabs, base_rev, y_grid, base_rev * (1 + uplift_target/100))
                     res.update({'g_type': g_type, 'elapsed': time.time()-t0, 'base_slabs_df': base_slabs})
                     st.session_state.results[g_type] = res
             st.success("✅ Done!")
@@ -871,12 +931,19 @@ with st.sidebar:
         total_tax = g_agg['normal_income_tax_920000'].sum()
         
         lab_nrm = _norm(lab_type)
-        # Year-aware slab lookup from PIT_slabs_2025.xlsx
-        base_slabs_raw = _get_truth_slabs(lab_type, selected_year)
+        # Base = chosen slab regime
+        base_slabs_raw = _get_truth_slabs(lab_type, base_regime_year)
         if base_slabs_raw is None:
-            base_slabs_raw = g_agg[['lower_bound', 'upper_bound', 'marginal_rate']].drop_duplicates().sort_values('lower_bound').copy()
-            if base_slabs_raw['marginal_rate'].max() > 1.0: base_slabs_raw['marginal_rate'] /= 100.0
+            st.error(f"❌ No {lab_type} slabs for {_fy_label(base_regime_year)} in the slab file.")
+            st.stop()
         base_list_calib = _schedule_to_list(base_slabs_raw)
+        base_rev_lab, _calib_lab, _cwarn_lab = _regime_base_revenue(
+            g_agg, lab_type, selected_year, base_regime_year, total_tax, base_slabs_raw)
+        if _cwarn_lab:
+            st.warning(f"⚠️ {_cwarn_lab}")
+        else:
+            st.caption(f"Base revenue ({_fy_label(base_regime_year)} on {selected_year} data): "
+                       f"PKR {base_rev_lab/1e9:,.2f}B · calibration factor {_calib_lab:.3f}")
 
         if st.session_state.lab_slabs is None or st.session_state.lab_type_active != lab_type:
             st.session_state.lab_slabs = base_slabs_raw[base_slabs_raw['upper_bound'] > base_slabs_raw['lower_bound']].copy().reset_index(drop=True)
@@ -884,7 +951,7 @@ with st.sidebar:
             
         st.markdown("---")
         st.write("**Quick Actions**")
-        if st.button("Reset to Current Law"):
+        if st.button("Reset to Base Regime"):
             st.session_state.lab_slabs = None
             if 'lab_sur_thresh' in st.session_state: del st.session_state['lab_sur_thresh']
             if 'lab_sur_rate'   in st.session_state: del st.session_state['lab_sur_rate']
@@ -926,7 +993,7 @@ if mode == "Policy Lab":
     st.caption("Define surcharge rates by taxable income band. Once income falls in a band, that band's surcharge % is applied to the full normal tax.")
 
     # Build default surcharge slabs from the system truth (single threshold → one slab)
-    _sur_info_default = _get_truth_surcharge(lab_type)
+    _sur_info_default = _get_truth_surcharge(lab_type, base_regime_year)
     _def_sur_thresh   = _sur_info_default.get('threshold', 0.0)
     _def_sur_rate     = _sur_info_default.get('rate', 0.0) * 100.0  # store as %
 
@@ -951,9 +1018,9 @@ if mode == "Policy Lab":
     # Use a separate key per type so switching types resets cleanly
     _sur_key      = f'lab_sur_slabs_{lab_type}'
     _sur_type_key = f'lab_sur_active_type'
-    if _sur_key not in st.session_state or st.session_state.get(_sur_type_key) != lab_type:
+    if _sur_key not in st.session_state or st.session_state.get(_sur_type_key) != (lab_type, base_regime_year):
         st.session_state[_sur_key]      = _default_sur_slabs(_def_sur_thresh, _def_sur_rate)
-        st.session_state[_sur_type_key] = lab_type
+        st.session_state[_sur_type_key] = (lab_type, base_regime_year)
 
     # Validate surcharge slabs
     def _validate_sur_slabs(df):
@@ -1066,37 +1133,6 @@ if mode == "Policy Lab":
     else:
         st.caption("👥 No filer adjustment applied.")
 
-    # ─── Helper: apply surcharge slabs to simulation metrics ───────────────
-    def _apply_sur_to_metrics(metrics, sur_slabs):
-        """
-        Post-process metrics dict returned by run_manual_simulation /
-        compute_metrics to fold in slab-based surcharge.
-        Updates: tax, etr, delta_etr, revenue.
-        sur_slabs = list of {lower, upper, rate} where rate is 0–1 decimal.
-        """
-        if not sur_slabs:
-            return metrics
-        y   = metrics['y']
-        tax = metrics['tax'].copy()
-
-        # Vectorised surcharge rate for each income level on the grid
-        sur_rates = np.zeros(len(y))
-        for s in sur_slabs:
-            mask = (y >= s['lower']) & (y < s['upper'])
-            sur_rates[mask] = s['rate']
-
-        tax_sur       = tax * (1.0 + sur_rates)
-        etr_sur       = np.where(y > 0, tax_sur / y, 0.0)
-        delta_etr_sur = np.diff(etr_sur, prepend=0.0) * 100.0
-
-        m = dict(metrics)           # shallow copy — don't mutate original
-        m['tax']       = tax_sur
-        m['etr']       = etr_sur
-        m['delta_etr'] = delta_etr_sur
-        # Scale revenue by the average surcharge uplift (weighted by tax)
-        sur_uplift = (tax_sur.sum() / tax.sum()) if tax.sum() > 0 else 1.0
-        m['revenue']   = metrics.get('revenue', 0.0) * sur_uplift
-        return m
 
     # ─── Instant Recompute ───
     if edited_df.empty:
@@ -1110,7 +1146,7 @@ if mode == "Policy Lab":
             st.session_state.results = {}
         else:
             y_grid = np.arange(0, 20_000_001, 100_000)
-            res = run_manual_simulation(sch_list, g_agg, y_grid, total_tax, base_list=base_list_calib)
+            res = run_manual_simulation(sch_list, g_agg, y_grid, base_rev_lab, base_list=base_list_calib)
             # ★ Apply surcharge to metrics so ALL dashboard charts reflect it
             res['metrics'] = _apply_sur_to_metrics(res['metrics'], _lab_sur_slabs)
             res.update({'g_type': lab_type, 'elapsed': 0.0, 'base_slabs_df': base_slabs_raw,
@@ -1122,7 +1158,7 @@ if mode == "Policy Lab":
         y_grid   = np.arange(0, 20_000_001, 100_000)
         sch_list = _schedule_to_list(edited_df)
         with st.spinner("Refining..."):
-            res = optimize_schedule_constrained(g_agg, sch_list, total_tax * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
+            res = optimize_schedule_constrained(g_agg, sch_list, base_rev_lab * (1 + uplift_target/100), y_grid, base_list=base_list_calib)
             # ★ Apply surcharge to metrics so ALL dashboard charts reflect it
             res['metrics'] = _apply_sur_to_metrics(res['metrics'], _lab_sur_slabs)
             res.update({'g_type': lab_type, 'elapsed': 0.1, 'base_slabs_df': base_slabs_raw,
@@ -1152,7 +1188,7 @@ else:
         bm = compute_metrics(_schedule_to_list(res['base_slabs_df']), res['metrics']['y'])
         
         # Apply surcharge to base metrics (bm) for accurate visualization comparison
-        _s = _get_truth_surcharge(g_type, selected_year)
+        _s = _get_truth_surcharge(g_type, base_regime_year)
         _base_sur_for_bm = [{'lower': _s['threshold'], 'upper': np.inf, 'rate': _s['rate']}] if _s.get('threshold', 0.0) > 0 and _s.get('rate', 0.0) > 0 else []
         bm = _apply_sur_to_metrics(bm, _base_sur_for_bm)
 
@@ -1260,16 +1296,16 @@ else:
 
         _prop_sur_slabs = res.get('lab_sur_slabs', None)
         if _prop_sur_slabs is None:
-            _prop_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
+            _prop_sur_slabs = _truth_sur_to_slabs(g_type, base_regime_year)
 
         # Filer scale: only applied to proposed (base always uses original Y)
         _filer_scale = res.get('lab_filer_scale', 1.0)
         _y_arr_prop  = _y_arr * _filer_scale
 
         # Base NIT Estimated — truth slabs + truth surcharge, original Y & N
-        _base_sch      = _get_truth_slabs(g_type, selected_year)
+        _base_sch      = _get_truth_slabs(g_type, base_regime_year)
         _base_sch      = _schedule_to_list(_base_sch) if _base_sch is not None else _schedule_to_list(res['base_slabs_df'])
-        _base_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
+        _base_sur_slabs = _truth_sur_to_slabs(g_type, base_regime_year)
         _nit_base      = _nit_total(_base_sch, _y_arr, _n_arr, _base_sur_slabs)
 
         # Proposed NIT Estimated — proposed slabs + slab surcharge + filer scale
@@ -1336,7 +1372,7 @@ else:
                 try:
                     _obs_sur_slabs = res.get('lab_sur_slabs', None)
                     if _obs_sur_slabs is None:
-                        _obs_sur_slabs = _truth_sur_to_slabs(g_type, selected_year)
+                        _obs_sur_slabs = _truth_sur_to_slabs(g_type, base_regime_year)
 
                     # Show surcharge summary
                     if _obs_sur_slabs:
@@ -1525,10 +1561,10 @@ else:
                 
                 cb, cp = st.columns(2)
                 with cb:
-                    st.subheader("🏛️ Current Law")
+                    st.subheader(f"🏛️ Base: {_fy_label(base_regime_year)}")
                     _base_fmt = _fmt_table(res['base_slabs_df'], base_filers, base_avg_etrs)
                     if _base_fmt.empty:
-                        st.info("No current law slabs available for this taxpayer type.")
+                        st.info("No base-regime slabs available for this taxpayer type.")
                     else:
                         st.table(_base_fmt)
                 with cp:
@@ -1551,7 +1587,7 @@ else:
                 st.markdown(f"""
 <div class="imf-section-tag">Tax Calculator</div>
 <h3 style="margin-top:6px;">🧮 {g_type} Tax Calculator</h3>
-<p>Enter an annual income to see the tax liability under both Current Law and your Lab Design.</p>
+<p>Enter an annual income to see the tax liability under both the base regime ({_fy_label(base_regime_year)}) and your Lab Design.</p>
 """, unsafe_allow_html=True)
                 
                 calc_income = st.number_input("Enter Annual Taxable Income (PKR)", min_value=0.0, value=1200000.0, step=50000.0, key=f"calc_in_{g_type}")
@@ -1569,7 +1605,7 @@ else:
 
                 c1, c2, c3 = st.columns(3)
                 with c1:
-                    st.metric("Current Law Tax", f"PKR {_tax_base_val:,.0f}", help=f"Effective Tax Rate: {_etr_base:.2%}")
+                    st.metric(f"Base Tax ({base_regime_year})", f"PKR {_tax_base_val:,.0f}", help=f"Effective Tax Rate: {_etr_base:.2%}")
                 with c2:
                     st.metric("Lab Design Tax", f"PKR {_tax_prop_val:,.0f}", delta=f"{_diff_val:,.0f}", delta_color="inverse", help=f"Effective Tax Rate: {_etr_prop:.2%}")
                 with c3:
@@ -1581,12 +1617,12 @@ else:
 
                 # Visual comparison
                 calc_df = pd.DataFrame({
-                    'Scenario': ['Current Law', 'Lab Design'],
+                    'Scenario': ['Base Regime', 'Lab Design'],
                     'Tax Amount': [_tax_base_val, _tax_prop_val]
                 })
                 import plotly.express as px
                 fig_calc = px.bar(calc_df, x='Scenario', y='Tax Amount', color='Scenario',
-                                 color_discrete_map={'Current Law': '#6c757d', 'Lab Design': '#003B5C'},
+                                 color_discrete_map={'Base Regime': '#6c757d', 'Lab Design': '#003B5C'},
                                  text_auto=',.0f')
                 fig_calc.update_layout(showlegend=False, height=300, margin=dict(t=20, b=20, l=20, r=20))
                 st.plotly_chart(fig_calc, use_container_width=True)
