@@ -129,5 +129,8 @@ def get_data_paths():
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     slab_file = os.path.join(base_dir, 'Income Tax Liability S_NS_AOP.xlsx')
     grid_file = os.path.join(base_dir, 'tax liability at 1 Lac.xlsx')  # Optional auxiliary
-    truth_file = os.path.join(base_dir, 'PIT_slabs_2025.xlsx')
+    # Slab file: prefer the updated file (2025, 2026, 2027 regimes); fall back to the old one
+    truth_file = os.path.join(base_dir, 'PIT_slabs_2026.xlsx')
+    if not os.path.exists(truth_file):
+        truth_file = os.path.join(base_dir, 'PIT_slabs_2025.xlsx')
     return slab_file, truth_file
