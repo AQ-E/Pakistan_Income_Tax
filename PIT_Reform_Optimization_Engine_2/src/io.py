@@ -64,27 +64,9 @@ def load_slab_data(filepath):
     if 'taxpayer_type' in df.columns:
         df['taxpayer_type'] = df['taxpayer_type'].replace({'S': 'Salaried', 'NS': 'Non-Salaried', 'AOP': 'AOP'})
 
-    # Create a Consolidated type
+    # Keep a stable order (year, type, band). No aggregated 'Consolidated' rows are created:
+    # the app works only with the S / NS / AOP types present in the uploaded data.
     if 'year' in df.columns and 'taxpayer_type' in df.columns and 'lower_bound' in df.columns:
-        agg_dict = {
-            'total_filers': 'sum',
-            'taxable_income_9100': 'sum',
-            'normal_income_tax_920000': 'sum',
-        }
-        if 'marginal_rate' in df.columns: agg_dict['marginal_rate'] = 'mean'
-        if 'nit_calculated' in df.columns: agg_dict['nit_calculated'] = 'sum'
-        if 'etr' in df.columns: agg_dict['etr'] = 'mean'
-        if 'cetr' in df.columns: agg_dict['cetr'] = 'mean'
-        
-        cons_df = df.groupby(['year', 'lower_bound', 'upper_bound']).agg(agg_dict).reset_index()
-        cons_df['taxpayer_type'] = 'Consolidated'
-        
-        # We need to make sure all other columns exist
-        for col in df.columns:
-            if col not in cons_df.columns:
-                cons_df[col] = df[col].mode()[0] if not df[col].empty else np.nan
-        
-        df = pd.concat([df, cons_df], ignore_index=True)
         df = df.sort_values(by=['year', 'taxpayer_type', 'lower_bound'])
     
     return df
