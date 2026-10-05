@@ -959,6 +959,8 @@ with st.sidebar:
 # ───────────────────────── Unified Schedule ─────────────────────────
 _UNI_GROUPS = ('Salaried', 'Non-Salaried', 'AOP')
 _UNI_COL = {'Salaried': '#003B5C', 'Non-Salaried': '#C8102E', 'AOP': '#E39B00'}
+_UNI_PTS = (1_000_000, 3_000_000, 10_000_000, 20_000_000)   # incomes where ETR is compared
+_UNI_GAP = (1_000_000, 20_000_000)                          # ETR gap = ETR(top) - ETR(bottom)
 
 def _uni_band_label(lo, up):
     return f"{lo/1e6:.2f}M+" if np.isinf(up) else f"{lo/1e6:.2f}M–{up/1e6:.2f}M"
@@ -980,16 +982,17 @@ def _uni_bands(g_type):
     return out
 
 def _uni_sur_mult(y, sur, include_sur):
+    y = np.atleast_1d(np.asarray(y, float))
     if include_sur and sur.get('threshold', 0) > 0 and sur.get('rate', 0) > 0:
-        return np.where(np.asarray(y, float) >= sur['threshold'], 1.0 + sur['rate'], 1.0)
-    return np.ones(len(np.atleast_1d(y)))
+        return np.where(y >= sur['threshold'], 1.0 + sur['rate'], 1.0)
+    return np.ones(len(y))
 
 def _uni_tax_pp(sch, sur, y, include_sur):
-    y = np.asarray(y, float)
+    y = np.atleast_1d(np.asarray(y, float))
     return compute_tax(sch, y) * _uni_sur_mult(y, sur, include_sur)
 
 def _uni_make(bounds, rates):
-    """Schedule list from taxed-slab start points `bounds` (first = exemption limit) and their rates."""
+    """Schedule from taxed-slab start points `bounds` (first = exemption limit) and their rates."""
     sch = [{'lower': 0.0, 'upper': float(bounds[0]), 'rate': 0.0}]
     for i, (b, r) in enumerate(zip(bounds, rates)):
         up = float(bounds[i + 1]) if i + 1 < len(bounds) else np.inf
@@ -998,53 +1001,58 @@ def _uni_make(bounds, rates):
 
 def _uni_from_truth(sch_list):
     """Truth schedule (first slab = 0% exemption) -> (bounds, rates) of the taxed slabs."""
-    bounds = [sch_list[j - 1]['upper'] for j in range(1, len(sch_list))]
-    rates  = [sch_list[j]['rate'] for j in range(1, len(sch_list))]
-    return bounds, rates
+    return ([sch_list[j - 1]['upper'] for j in range(1, len(sch_list))],
+            [sch_list[j]['rate'] for j in range(1, len(sch_list))])
 
-def _uni_least_change(bounds, bands, factor, own_sch, own_sur, uni_sur, inc_sur, base_total, iters=20000):
-    """Rates on fixed `bounds` that change each filer's tax as little as possible (filer-weighted
-    squared change in calibrated tax per filer, over all groups and bands), with rates non-negative
-    and non-decreasing, and total revenue equal to base_total. Solved by projected gradient (FISTA)
-    with a revenue penalty, then rates scaled so revenue matches exactly."""
-    J = len(bounds)
-    rows_M, rows_t, rows_w = [], [], []
-    for g, b in bands.items():
-        y = b['y_pp'].values
-        cols = []
-        for j in range(J):
-            unit = [0.0] * J; unit[j] = 1.0
-            cols.append(compute_tax(_uni_make(bounds, unit), y))
-        M = np.column_stack(cols) * _uni_sur_mult(y, uni_sur, inc_sur)[:, None] * factor[g]
-        rows_M.append(M)
-        rows_t.append(factor[g] * _uni_tax_pp(own_sch[g], own_sur[g], y, inc_sur))
-        rows_w.append(b['filers'].values)
-    M = np.vstack(rows_M); t = np.concatenate(rows_t); w = np.concatenate(rows_w)
-    c = (w[:, None] * M).sum(axis=0)                       # revenue per unit of each rate
-    L = np.tril(np.ones((J, J)))                           # rates = L @ d, d >= 0  -> non-decreasing
-    S = np.sqrt((w * t ** 2).sum() / w.sum()) or 1.0       # RMS tax per filer, for scaling
-    sw = np.sqrt(w / w.sum())
-    lam = 100.0
-    G = np.vstack([(sw[:, None] * M / S) @ L, np.sqrt(lam) * (c / base_total) @ L])
-    h = np.concatenate([sw * t / S, [np.sqrt(lam)]])
-    Lip = 2 * np.linalg.norm(G, 2) ** 2
-    d = np.zeros(J); z = d.copy(); tk = 1.0
-    for _ in range(iters):
-        grad = 2 * G.T @ (G @ z - h)
-        d_new = np.maximum(z - grad / Lip, 0.0)
-        tk_new = (1 + np.sqrt(1 + 4 * tk * tk)) / 2
-        z = d_new + ((tk - 1) / tk_new) * (d_new - d)
-        d, tk = d_new, tk_new
-    rates = L @ d
-    rev = c @ rates
-    return rates * (base_total / rev) if rev > 0 else rates
+def _uni_nnls(A, b):
+    """Non-negative least squares (Lawson–Hanson): minimise ||A x − b|| subject to x ≥ 0."""
+    n = A.shape[1]
+    x = np.zeros(n); P = np.zeros(n, dtype=bool)
+    tol = 1e-10 * max(1.0, np.abs(A).max()) * max(1.0, np.abs(b).max())
+    w = A.T @ (b - A @ x)
+    for _ in range(5 * n + 10):
+        if P.all() or (w[~P] <= tol).all():
+            break
+        j = np.where(~P)[0][np.argmax(w[~P])]
+        P[j] = True
+        for _ in range(5 * n + 10):
+            z = np.zeros(n)
+            z[P] = np.linalg.lstsq(A[:, P], b, rcond=None)[0]
+            if (z[P] > 0).all():
+                x = z
+                break
+            neg = P & (z <= 0)
+            den = x[neg] - z[neg]
+            alpha = np.min(np.where(den > 0, x[neg] / np.where(den > 0, den, 1), 0.0))
+            x = x + alpha * (z - x)
+            P = P & (x > 1e-15)
+            x[~P] = 0.0
+            if not P.any():
+                break
+        w = A.T @ (b - A @ x)
+    return x
+
+def _uni_kakwani(y, n, tax_pp):
+    """Kakwani index = concentration index of tax − Gini of pre-tax income (units ranked by income)."""
+    o = np.argsort(y, kind='mergesort')
+    y, n, t = np.asarray(y)[o], np.asarray(n)[o], np.asarray(tax_pp)[o]
+    X = np.concatenate([[0], np.cumsum(n) / n.sum()])
+    Y = np.concatenate([[0], np.cumsum(n * y) / (n * y).sum()])
+    T = np.concatenate([[0], np.cumsum(n * t) / (n * t).sum()]) if (n * t).sum() > 0 else Y
+    gini = 1 - np.sum(np.diff(X) * (Y[1:] + Y[:-1]))
+    conc = 1 - np.sum(np.diff(X) * (T[1:] + T[:-1]))
+    return conc - gini
+
+def _uni_etr(sch, sur, inc_sur, pts):
+    pts = np.asarray(pts, float)
+    return _uni_tax_pp(sch, sur, pts, inc_sur) / pts
 
 if mode == "Unified Schedule":
     import plotly.graph_objects as go
 
-    st.header("🟰 Unified Schedule — revenue-neutral options")
+    st.header("🟰 Unified Schedule — revenue-neutral, progressive options")
     st.caption(f"One schedule for Salaried, Non-Salaried and AOP. Data: {selected_year} returns · "
-               f"Base: {_fy_label(base_regime_year)} schedules. Each option collects the same combined "
+               f"Base: {_fy_label(base_regime_year)} schedules. Every option collects the same combined "
                "revenue as the base. Band-average approximation: each band is taxed at its average "
                "declared income per filer.")
 
@@ -1066,15 +1074,24 @@ if mode == "Unified Schedule":
         _dat[g] = _schedule_to_list(_dd) if _dd is not None else None
         _dat_sur[g] = _get_truth_surcharge(g, selected_year)
 
+    # ── Settings ──
     c1, c2, c3 = st.columns(3)
     _inc_sur = c1.checkbox("Include surcharge (s.4AB)", value=True,
-                           help="Applied to base and unified schedules alike. Set this to match whether "
-                                "field 920000 includes surcharge.")
-    _u_sur_rate = c2.number_input("Unified surcharge rate (%)", 0.0, 50.0, 10.0, 0.5,
-                                  disabled=not _inc_sur) / 100.0
+                           help="When ticked, surcharge is included in the base, the calibration and every option. "
+                                "When unticked, all of these are recalculated without surcharge. "
+                                "Set this to match whether field 920000 includes surcharge.")
+    _u_sur_rate = c2.number_input("Unified surcharge rate (%)", 0.0, 50.0, 10.0, 0.5, disabled=not _inc_sur) / 100.0
     _u_sur_thr = c3.number_input("Unified surcharge threshold (PKR)", 0.0, 1e9, 10_000_000.0, 500_000.0,
                                  disabled=not _inc_sur)
     _u_sur = {'threshold': _u_sur_thr, 'rate': _u_sur_rate}
+
+    c4, c5, c6 = st.columns(3)
+    _step = c4.number_input("Minimum rate step between slabs (percentage points)", 0.1, 20.0, 1.0, 0.5,
+                            help="Each slab's rate must be at least this much higher than the slab below. "
+                                 "There is no international standard for this value.") / 100.0
+    _cap_on = c5.checkbox("Set a top-rate cap", value=False)
+    _cap = c5.number_input("Top-rate cap (%)", 1.0, 100.0, 45.0, 0.5, disabled=not _cap_on) / 100.0
+    _nslab = c6.slider("Number of slabs (incl. 0% slab)", 4, 10, (6, 8))
 
     # Calibration factor per group: actual tax / formula tax under the data year's own schedule
     _factor = {}
@@ -1087,79 +1104,207 @@ if mode == "Unified Schedule":
         _form = (_uni_tax_pp(_dat[g], _dat_sur[g], b['y_pp'], _inc_sur) * b['filers']).sum()
         _factor[g] = b['actual_tax'].sum() / _form if _form > 0 else 1.0
 
-    def _rev(g, sch, sur):
-        b = _bands[g]
-        return _factor[g] * (_uni_tax_pp(sch, sur, b['y_pp'], _inc_sur) * b['filers']).sum()
-
-    _base_rev = {g: _rev(g, _own[g], _own_sur[g]) for g in _UNI_GROUPS}
+    # Stacked arrays over all groups and bands
+    _Y = np.concatenate([_bands[g]['y_pp'].values for g in _UNI_GROUPS])
+    _N = np.concatenate([_bands[g]['filers'].values for g in _UNI_GROUPS])
+    _F = np.concatenate([np.full(len(_bands[g]), _factor[g]) for g in _UNI_GROUPS])
+    _GRP = np.concatenate([np.full(len(_bands[g]), g, dtype=object) for g in _UNI_GROUPS])
+    _BASE_PP = np.concatenate([_factor[g] * _uni_tax_pp(_own[g], _own_sur[g], _bands[g]['y_pp'], _inc_sur)
+                               for g in _UNI_GROUPS])
+    _base_rev = {g: (_BASE_PP * _N)[_GRP == g].sum() for g in _UNI_GROUPS}
     _base_total = sum(_base_rev.values())
+    _exempt = _uni_from_truth(_own['Salaried'])[0][0]
+    _TX = _Y > _exempt                                   # filers above the exemption limit
+    _W = np.where(_TX, _N, 0.0); _W = _W / _W.sum() if _W.sum() > 0 else _W
+
+    # Today's progressivity benchmarks
+    _K_today = _uni_kakwani(_Y, _N, _BASE_PP)
+    _etr_S = _uni_etr(_own['Salaried'], _own_sur['Salaried'], _inc_sur, _UNI_PTS)
+    _etr_N = _uni_etr(_own['Non-Salaried'], _own_sur['Non-Salaried'], _inc_sur, _UNI_PTS)
+    _nS = _N[_TX & (_GRP == 'Salaried')].sum(); _nN = _N[_TX & (_GRP != 'Salaried')].sum()
+    _wS = _nS / (_nS + _nN) if (_nS + _nN) > 0 else 0.5
+    _etr_today = _wS * _etr_S + (1 - _wS) * _etr_N
+    _gi = (_UNI_PTS.index(_UNI_GAP[0]), _UNI_PTS.index(_UNI_GAP[1]))
+    _gap_today = _etr_today[_gi[1]] - _etr_today[_gi[0]]
+
+    def _evaluate(name, bounds, rates):
+        """All results and rule checks for one unified schedule."""
+        sch = _uni_make(bounds, rates)
+        new_pp = _F * _uni_tax_pp(sch, _u_sur, _Y, _inc_sur)
+        d_etr = np.where(_Y > 0, (new_pp - _BASE_PP) / np.where(_Y > 0, _Y, 1), 0.0)
+        grid = np.arange(_exempt + 50_000, 50_000_001, 25_000, dtype=float)
+        etr_grid = _uni_etr(sch, _u_sur, _inc_sur, grid)
+        etr_pts = _uni_etr(sch, _u_sur, _inc_sur, _UNI_PTS)
+        rr = np.asarray(rates, float)
+        steps = np.diff(np.concatenate([[0.0], rr]))
+        row = {'Option': name, 'Slabs (incl. 0%)': len(sch), 'Top rate': rr.max(),
+               'Avg ETR change (pts)': 100 * np.sqrt(np.sum(_W * d_etr ** 2)),
+               'Kakwani': _uni_kakwani(_Y, _N, new_pp),
+               'ETR gap 1M→20M (pts)': 100 * (etr_pts[_gi[1]] - etr_pts[_gi[0]])}
+        row['✔ Rates rise'] = bool(np.all(steps >= _step - 1e-9))
+        row['✔ ETR rises'] = bool(np.all(np.diff(etr_grid) >= -1e-12))
+        row['✔ Gap ≥ today'] = bool(row['ETR gap 1M→20M (pts)'] >= 100 * _gap_today - 1e-6)
+        row['✔ Kakwani ≥ today'] = bool(row['Kakwani'] >= _K_today - 1e-9)
+        row['✔ Cap'] = bool(rr.max() <= _cap + 1e-9) if _cap_on else True
+        row['Passes all'] = all(row[k] for k in row if k.startswith('✔'))
+        tot = 0.0
+        for g in _UNI_GROUPS:
+            u = (new_pp * _N)[_GRP == g].sum(); tot += u
+            row[f'{g} change (PKR B)'] = (u - _base_rev[g]) / 1e9
+            row[f'{g} change (%)'] = (u - _base_rev[g]) / _base_rev[g] if _base_rev[g] > 0 else np.nan
+        row['Total change (PKR B)'] = (tot - _base_total) / 1e9
+        chg = new_pp - _BASE_PP
+        row['Filers paying more'] = _N[chg > 0.5].sum()
+        row['Filers paying less'] = _N[chg < -0.5].sum()
+        return row, {'sch': sch, 'bounds': list(bounds), 'rates': list(rr), 'new_pp': new_pp, 'etr_pts': etr_pts}
+
+    def _solve_layout(bounds):
+        """Rates on fixed slab limits that change filers' ETR the least (filer-weighted, all groups),
+        with each rate at least `_step` above the one below, and revenue exactly equal to the base."""
+        b = np.asarray(bounds, float); J = len(b)
+        widths = np.append(np.diff(b), np.inf)
+        yt, wt, ft = _Y[_TX], _W[_TX], _F[_TX]
+        U = np.clip(_Y[:, None] - b[None, :], 0, widths[None, :])           # income inside each slab
+        M = U * (_uni_sur_mult(_Y, _u_sur, _inc_sur) * _F)[:, None]          # calibrated tax per unit rate
+        Mt = M[_TX]
+        L = np.tril(np.ones((J, J))); jv = _step * np.arange(1, J + 1)
+        c = (_N[:, None] * M).sum(axis=0)                                    # revenue per unit rate
+        sw = np.sqrt(wt) / yt
+        A1 = sw[:, None] * (Mt @ L); h1 = sw * (_BASE_PP[_TX] - Mt @ jv)
+        lam = np.sqrt(1e4)
+        A2 = lam * (c @ L)[None, :] / _base_total; h2 = np.array([lam * (1 - (c @ jv) / _base_total)])
+        d = _uni_nnls(np.vstack([A1, A2]), np.concatenate([h1, h2]))
+        Ld = L @ d
+        num, den = _base_total - c @ jv, c @ Ld
+        if num < 0 or den <= 0:
+            return None                                 # minimum steps alone already exceed the base revenue
+        return jv + (num / den) * Ld
+
+    _bS, _rS = _uni_from_truth(_own['Salaried'])
+    _bN, _rN = _uni_from_truth(_own['Non-Salaried'])
 
     def _neutral_scale(bounds, rates):
         sch = _uni_make(bounds, rates)
-        tot = sum(_rev(g, sch, _u_sur) for g in _UNI_GROUPS)
+        tot = (_F * _uni_tax_pp(sch, _u_sur, _Y, _inc_sur) * _N).sum()
         return np.asarray(rates) * (_base_total / tot) if tot > 0 else np.asarray(rates)
 
-    # ── Build the three options ──
-    _bS, _rS = _uni_from_truth(_own['Salaried'])
-    _bN, _rN = _uni_from_truth(_own['Non-Salaried'])
-    _bU = sorted(set(_bS) | set(_bN))
-    _opts = {
-        f"A · Salaried {base_regime_year} slabs, rates scaled": (_bS, _neutral_scale(_bS, _rS)),
-        f"B · Non-salaried {base_regime_year} slabs, rates scaled": (_bN, _neutral_scale(_bN, _rN)),
-        "C · Least change (combined slab boundaries)": (
-            _bU, _uni_least_change(_bU, _bands, _factor, _own, _own_sur, _u_sur, _inc_sur, _base_total)),
-    }
-    st.caption("A and B keep one group's current slab boundaries and multiply all its rates by the same factor "
-               "until combined revenue is unchanged. C uses every boundary from both schedules and picks the "
-               "rates that change each filer's tax the least (filers in all groups counted equally), with rates "
-               "never falling as income rises.")
+    def _nice(v):
+        return round(v / 1e5) * 1e5 if v < 2e6 else (round(v / 5e5) * 5e5 if v < 1e7 else round(v / 1e6) * 1e6)
 
-    _results, _summary = {}, []
-    for name, (bnd, rts) in _opts.items():
-        sch = _uni_make(bnd, rts)
-        res_g = {}
-        for g in _UNI_GROUPS:
-            b = _bands[g].copy()
-            b['base_pp'] = _factor[g] * _uni_tax_pp(_own[g], _own_sur[g], b['y_pp'], _inc_sur)
-            b['uni_pp']  = _factor[g] * _uni_tax_pp(sch, _u_sur, b['y_pp'], _inc_sur)
-            b['chg_pp']  = b['uni_pp'] - b['base_pp']
-            res_g[g] = b
-        _results[name] = (sch, res_g)
-        row = {'Option': name, 'Slabs (incl. 0%)': len(sch), 'Top rate': max(rts) if len(rts) else 0.0}
-        for g in _UNI_GROUPS:
-            u = (res_g[g]['uni_pp'] * res_g[g]['filers']).sum()
-            row[f'{g} change (PKR B)'] = (u - _base_rev[g]) / 1e9
-            row[f'{g} change (%)'] = (u - _base_rev[g]) / _base_rev[g] if _base_rev[g] > 0 else np.nan
-        tot_u = sum((res_g[g]['uni_pp'] * res_g[g]['filers']).sum() for g in _UNI_GROUPS)
-        row['Total change (PKR B)'] = (tot_u - _base_total) / 1e9
-        row['Filers paying more'] = sum(res_g[g].loc[res_g[g]['chg_pp'] > 0.5, 'filers'].sum() for g in _UNI_GROUPS)
-        row['Filers paying less'] = sum(res_g[g].loc[res_g[g]['chg_pp'] < -0.5, 'filers'].sum() for g in _UNI_GROUPS)
-        _summary.append(row)
-    _sum_df = pd.DataFrame(_summary)
+    # Pool of possible slab limits: 2026 limits of both schedules + percentiles of taxpayers' incomes
+    _base_lims = sorted(set(_bS[1:]) | set(_bN[1:]))
+    _o = np.argsort(_Y[_TX]); _cw = np.cumsum(_N[_TX][_o]) / _N[_TX].sum()
+    _pct = [_nice(_Y[_TX][_o][min(np.searchsorted(_cw, q), len(_cw) - 1)]) for q in (0.2, 0.4, 0.6, 0.8, 0.9, 0.95, 0.99)]
+    _pool = list(_base_lims)
+    for v in _pct:
+        if v > _exempt + 1e5 and all(abs(v - p) >= 1.5e5 for p in _pool):
+            _pool.append(v)
+    _pool = sorted(_pool)
+
+    _settings_key = (selected_year, base_regime_year, _inc_sur, _u_sur_rate, _u_sur_thr, _step, _cap_on,
+                     _cap, _nslab, tuple(_pool))
+    st.caption(f"Possible slab limits tried (PKR M): {', '.join(f'{p/1e6:g}' for p in _pool)} — from the "
+               f"{base_regime_year} salaried and non-salaried limits plus income percentiles of taxpayers in your data. "
+               f"The exemption limit stays at PKR {_exempt:,.0f}.")
+
+    if st.button("🔍 Find unified schedules", type="primary"):
+        from itertools import combinations
+        cands = []
+        with st.spinner("Trying slab layouts…"):
+            for J in range(_nslab[0] - 1, _nslab[1]):          # taxed slabs = slabs − 1
+                for extra in combinations(_pool, J - 1):
+                    bnd = [_exempt] + list(extra)
+                    r = _solve_layout(bnd)
+                    if r is None:
+                        continue
+                    row, det = _evaluate("", bnd, r)
+                    cands.append((row, det))
+            refA = _evaluate(f"A · {base_regime_year} salaried slabs, rates scaled (reference)", _bS, _neutral_scale(_bS, _rS))
+            refB = _evaluate(f"B · {base_regime_year} non-salaried slabs, rates scaled (reference)", _bN, _neutral_scale(_bN, _rN))
+        st.session_state['uni_res'] = {'key': _settings_key, 'cands': cands, 'A': refA, 'B': refB}
+
+    _res = st.session_state.get('uni_res')
+    if not _res:
+        st.info("Set the options above and click **Find unified schedules**.")
+        st.stop()
+    if _res['key'] != _settings_key:
+        st.warning("⚠️ Settings or data changed since the last search — click **Find unified schedules** again.")
+        st.stop()
+
+    # ── Rule summary ──
+    st.subheader("Progressivity rules")
+    st.markdown(
+        f"- **Rates rise:** each slab's rate is at least {_step*100:.1f} points higher than the slab below.\n"
+        f"- **ETR rises:** the share of income paid as tax goes up at every income above PKR {_exempt:,.0f}.\n"
+        f"- **Gap ≥ today:** ETR at PKR 20M minus ETR at PKR 1M is at least today's gap of "
+        f"**{100*_gap_today:.2f} points** (today = salaried and non-salaried/AOP schedules, weighted by number of taxpayers).\n"
+        f"- **Kakwani ≥ today:** overall progressivity of tax across all filers is at least today's **{_K_today:.4f}**.\n"
+        + (f"- **Cap:** no rate above {_cap*100:.1f}%.\n" if _cap_on else "")
+        + "- **Winner:** among options passing every rule, the one that changes filers' ETR the least.")
+
+    cands = _res['cands']
+    passing = sorted([c for c in cands if c[0]['Passes all']], key=lambda c: c[0]['Avg ETR change (pts)'])
+    shown = []
+    if passing:
+        for i, (row, det) in enumerate(passing[:5], start=1):
+            row = dict(row); row['Option'] = f"{'🏆 Winner' if i == 1 else f'#{i}'} · {row['Slabs (incl. 0%)']} slabs"
+            shown.append((row, det))
+        st.success(f"✅ {len(passing)} of {len(cands)} slab layouts pass every rule. Showing the 5 with the least change.")
+    else:
+        rules = ['✔ Rates rise', '✔ ETR rises', '✔ Gap ≥ today', '✔ Kakwani ≥ today'] + (['✔ Cap'] if _cap_on else [])
+        fails = {r: sum(1 for c in cands if not c[0][r]) for r in rules}
+        st.error("❌ No slab layout passes every rule. Layouts failing each rule: " +
+                 " · ".join(f"{r.replace('✔ ', '')}: {v} of {len(cands)}" for r, v in fails.items()) +
+                 ". Showing the 5 closest options; relax the blocking rule to find a passing one.")
+        for i, (row, det) in enumerate(sorted(cands, key=lambda c: c[0]['Avg ETR change (pts)'])[:5], start=1):
+            row = dict(row); row['Option'] = f"#{i} (fails) · {row['Slabs (incl. 0%)']} slabs"
+            shown.append((row, det))
+    shown += [_res['A'], _res['B']]
 
     st.subheader("Options compared")
     st.caption(f"Base combined revenue: PKR {_base_total/1e9:,.1f}B (Salaried {_base_rev['Salaried']/1e9:,.1f}B · "
                f"Non-Salaried {_base_rev['Non-Salaried']/1e9:,.1f}B · AOP {_base_rev['AOP']/1e9:,.1f}B). "
                f"Calibration factors: S {_factor['Salaried']:.3f} · NS {_factor['Non-Salaried']:.3f} · "
-               f"AOP {_factor['AOP']:.3f}. Gainer/loser counts treat each band as moving together.")
-    _fmt = {'Top rate': '{:.1%}', 'Total change (PKR B)': '{:+,.2f}',
+               f"AOP {_factor['AOP']:.3f}. Today: Kakwani {_K_today:.4f}, ETR gap {100*_gap_today:.2f} points. "
+               "Avg ETR change = typical change in filers' ETR (root-mean-square, filers above the exemption). "
+               "Gainer/loser counts treat each band as moving together.")
+    _tbl = pd.DataFrame([r for r, _ in shown])
+    for col in [c for c in _tbl.columns if c.startswith('✔') or c == 'Passes all']:
+        _tbl[col] = _tbl[col].map({True: '✅', False: '❌'})
+    _fmt = {'Top rate': '{:.1%}', 'Avg ETR change (pts)': '{:.2f}', 'Kakwani': '{:.4f}',
+            'ETR gap 1M→20M (pts)': '{:.2f}', 'Total change (PKR B)': '{:+,.2f}',
             'Filers paying more': '{:,.0f}', 'Filers paying less': '{:,.0f}'}
     for g in _UNI_GROUPS:
         _fmt[f'{g} change (PKR B)'] = '{:+,.1f}'; _fmt[f'{g} change (%)'] = '{:+.1%}'
-    st.dataframe(_sum_df.style.format(_fmt, na_rep='—'), use_container_width=True, hide_index=True)
+    if not _cap_on:
+        _tbl = _tbl.drop(columns=['✔ Cap'])
+    st.dataframe(_tbl.style.format(_fmt, na_rep='—'), use_container_width=True, hide_index=True)
 
-    # ETR curves: current schedules vs the three options
-    _grid = np.arange(100_000, 20_000_001, 50_000, dtype=float)
+    # ETR at fixed incomes
+    st.subheader("ETR at selected incomes")
+    _etr_rows = [{'Schedule': f'Today: salaried ({base_regime_year})', **{f'{p/1e6:g}M': v for p, v in zip(_UNI_PTS, _etr_S)}},
+                 {'Schedule': f'Today: non-salaried / AOP ({base_regime_year})', **{f'{p/1e6:g}M': v for p, v in zip(_UNI_PTS, _etr_N)}},
+                 {'Schedule': 'Today: weighted by taxpayers', **{f'{p/1e6:g}M': v for p, v in zip(_UNI_PTS, _etr_today)}}]
+    for row, det in shown:
+        _etr_rows.append({'Schedule': row['Option'], **{f'{p/1e6:g}M': v for p, v in zip(_UNI_PTS, det['etr_pts'])}})
+    _etr_df = pd.DataFrame(_etr_rows)
+    _etr_df['Gap 1M→20M (pts)'] = 100 * (_etr_df['20M'] - _etr_df['1M'])
+    st.dataframe(_etr_df.style.format({**{f'{p/1e6:g}M': '{:.2%}' for p in _UNI_PTS}, 'Gap 1M→20M (pts)': '{:.2f}'}),
+                 use_container_width=True, hide_index=True)
+
+    _grid = np.arange(100_000, 25_000_001, 50_000, dtype=float)
     fig_etr = go.Figure()
-    fig_etr.add_scatter(x=_grid/1e6, y=_uni_tax_pp(_own['Salaried'], _own_sur['Salaried'], _grid, _inc_sur)/_grid,
-                        mode='lines', name=f"Current salaried ({base_regime_year})", line=dict(color='#003B5C', dash='dash'))
-    fig_etr.add_scatter(x=_grid/1e6, y=_uni_tax_pp(_own['Non-Salaried'], _own_sur['Non-Salaried'], _grid, _inc_sur)/_grid,
-                        mode='lines', name=f"Current non-salaried / AOP ({base_regime_year})", line=dict(color='#C8102E', dash='dash'))
-    for (name, (sch, _)), colr in zip(_results.items(), ['#2E7D32', '#6A1B9A', '#00838F']):
-        fig_etr.add_scatter(x=_grid/1e6, y=_uni_tax_pp(sch, _u_sur, _grid, _inc_sur)/_grid,
-                            mode='lines', name=name.split(' · ')[0] + ' (unified)', line=dict(color=colr, width=3))
-    fig_etr.update_layout(title="Statutory ETR: current schedules vs unified options", height=420,
-                          plot_bgcolor='white', xaxis_title="Taxable income (PKR million)",
+    fig_etr.add_scatter(x=_grid/1e6, y=_uni_etr(_own['Salaried'], _own_sur['Salaried'], _inc_sur, _grid), mode='lines',
+                        name=f"Today: salaried ({base_regime_year})", line=dict(color='#003B5C', dash='dash'))
+    fig_etr.add_scatter(x=_grid/1e6, y=_uni_etr(_own['Non-Salaried'], _own_sur['Non-Salaried'], _inc_sur, _grid), mode='lines',
+                        name=f"Today: non-salaried / AOP ({base_regime_year})", line=dict(color='#C8102E', dash='dash'))
+    for (row, det), colr in zip([shown[0], shown[-2], shown[-1]], ['#2E7D32', '#6A1B9A', '#00838F']):
+        fig_etr.add_scatter(x=_grid/1e6, y=_uni_etr(det['sch'], _u_sur, _inc_sur, _grid), mode='lines',
+                            name=row['Option'], line=dict(color=colr, width=3))
+    for p in _UNI_GAP:
+        fig_etr.add_vline(x=p/1e6, line_dash='dot', line_color='#999')
+    fig_etr.update_layout(title="Statutory ETR: today vs unified options (dotted lines: 1M and 20M, where the gap is measured)",
+                          height=440, plot_bgcolor='white', xaxis_title="Taxable income (PKR million)",
                           yaxis_title="Effective tax rate", yaxis_tickformat='.0%',
                           legend=dict(orientation='h', y=-0.25), margin=dict(t=50, b=30, l=30, r=10))
     fig_etr.update_xaxes(showgrid=True, gridcolor='#E8EDF2'); fig_etr.update_yaxes(showgrid=True, gridcolor='#E8EDF2')
@@ -1167,8 +1312,10 @@ if mode == "Unified Schedule":
 
     # ── Detail for one option ──
     st.subheader("Option detail")
-    _pick = st.radio("Show details for", list(_opts.keys()), horizontal=False)
-    _sch, _rg = _results[_pick]
+    _names = [r['Option'] for r, _ in shown]
+    _pick = st.radio("Show details for", _names)
+    _row, _det = shown[_names.index(_pick)]
+    _sch = _det['sch']
 
     _cum, _rows = 0.0, []
     for s in _sch:
@@ -1177,70 +1324,85 @@ if mode == "Unified Schedule":
                       'Rate': s['rate'], 'Tax at start of slab (PKR)': _cum})
         if not np.isinf(s['upper']):
             _cum += (s['upper'] - s['lower']) * s['rate']
-    _sch_df = pd.DataFrame(_rows)
     cA, cB = st.columns([1, 1])
     with cA:
         st.markdown("**Unified schedule**")
-        st.dataframe(_sch_df.style.format({'From (PKR)': '{:,.0f}', 'Rate': '{:.2%}',
-                                           'Tax at start of slab (PKR)': '{:,.0f}'}),
+        st.dataframe(pd.DataFrame(_rows).style.format({'From (PKR)': '{:,.0f}', 'Rate': '{:.2%}',
+                                                       'Tax at start of slab (PKR)': '{:,.0f}'}),
                      use_container_width=True, hide_index=True)
         if _inc_sur:
             st.caption(f"Plus surcharge {_u_sur_rate:.1%} of tax where income ≥ PKR {_u_sur_thr:,.0f}.")
     with cB:
         _items = []
         for g in _UNI_GROUPS:
-            u = (_rg[g]['uni_pp'] * _rg[g]['filers']).sum()
-            pct = (u - _base_rev[g]) / _base_rev[g] if _base_rev[g] > 0 else 0.0
+            pct = _row[f'{g} change (%)']
+            u = _base_rev[g] + _row[f'{g} change (PKR B)'] * 1e9
             _items.append(f"<div class='imf-metric-card'><div class='imf-mc-label'>{g}</div>"
                           f"<div class='imf-mc-value'>PKR {_base_rev[g]/1e9:,.1f}B → {u/1e9:,.1f}B</div>"
                           f"<div class='{'imf-delta-pos' if pct >= 0 else 'imf-delta-neg'}'>"
                           f"{'▲' if pct >= 0 else '▼'} {pct:+.1%}</div></div>")
         st.markdown("<div class='imf-metric-row'>" + "".join(_items) + "</div>", unsafe_allow_html=True)
 
-    _cats = (pd.concat([_rg[g][['lower', 'band']] for g in _UNI_GROUPS])
-               .drop_duplicates('band').sort_values('lower')['band'].tolist())
+    _band_tbls = {}
     fig_chg = go.Figure()
+    _cats = []
     for g in _UNI_GROUPS:
-        fig_chg.add_bar(x=_rg[g]['band'], y=_rg[g]['chg_pp'], name=g, marker_color=_UNI_COL[g])
-    fig_chg.update_layout(title="Change in tax per filer by income band (PKR)", barmode='group', height=420,
+        m = _GRP == g
+        b = _bands[g]
+        new_pp = _det['new_pp'][m]; base_pp = _BASE_PP[m]
+        etr_b = np.where(b['y_pp'] > 0, base_pp / b['y_pp'].where(b['y_pp'] > 0, 1), 0.0)
+        etr_n = np.where(b['y_pp'] > 0, new_pp / b['y_pp'].where(b['y_pp'] > 0, 1), 0.0)
+        fig_chg.add_bar(x=b['band'], y=100 * (etr_n - etr_b), name=g, marker_color=_UNI_COL[g])
+        _cats += [x for x in b.sort_values('lower')['band'] if x not in _cats]
+        _band_tbls[g] = pd.DataFrame({
+            'Band': b['band'], 'Filers': b['filers'].round(0).astype(int),
+            'Avg declared income (PKR)': b['y_pp'].round(0),
+            'Base tax / filer (PKR)': np.round(base_pp, 0), 'Unified tax / filer (PKR)': np.round(new_pp, 0),
+            'Change / filer (PKR)': np.round(new_pp - base_pp, 0),
+            'Base ETR': etr_b, 'Unified ETR': etr_n, 'ETR change (pts)': 100 * (etr_n - etr_b),
+            'Total change (PKR M)': np.round((new_pp - base_pp) * b['filers'].values / 1e6, 1)})
+    _lo_map = {}
+    for g in _UNI_GROUPS:
+        for lb, lo in zip(_bands[g]['band'], _bands[g]['lower']):
+            _lo_map.setdefault(lb, lo)
+    _cats = sorted(_lo_map, key=_lo_map.get)
+    fig_chg.update_layout(title="Change in ETR by income band (percentage points)", barmode='group', height=420,
                           plot_bgcolor='white', xaxis_title="Income band (declared taxable income)",
-                          yaxis_title="PKR per filer", margin=dict(t=50, b=30, l=30, r=10),
+                          yaxis_title="ETR change (points)", margin=dict(t=50, b=30, l=30, r=10),
                           legend=dict(orientation='h', y=-0.3))
     fig_chg.update_xaxes(categoryorder='array', categoryarray=_cats)
     fig_chg.update_yaxes(showgrid=True, gridcolor='#E8EDF2', zeroline=True, zerolinecolor='#888')
     st.plotly_chart(fig_chg, use_container_width=True, key="uni_chg")
 
-    _export = {'Options': _sum_df}
     for g in _UNI_GROUPS:
-        r = _rg[g]
-        tbl = pd.DataFrame({
-            'Band': r['band'], 'Filers': r['filers'].round(0).astype(int),
-            'Avg declared income (PKR)': r['y_pp'].round(0),
-            'Base tax / filer (PKR)': r['base_pp'].round(0), 'Unified tax / filer (PKR)': r['uni_pp'].round(0),
-            'Change / filer (PKR)': r['chg_pp'].round(0),
-            'Total change (PKR M)': (r['chg_pp'] * r['filers'] / 1e6).round(1)})
-        _export[f"Detail_{'S' if g == 'Salaried' else ('NS' if g == 'Non-Salaried' else 'AOP')}"] = tbl
         with st.expander(f"📋 {g}: band-by-band detail"):
-            st.dataframe(tbl.style.format({'Avg declared income (PKR)': '{:,.0f}', 'Base tax / filer (PKR)': '{:,.0f}',
-                                           'Unified tax / filer (PKR)': '{:,.0f}', 'Change / filer (PKR)': '{:+,.0f}',
-                                           'Total change (PKR M)': '{:+,.1f}', 'Filers': '{:,}'}),
-                         use_container_width=True, hide_index=True)
+            st.dataframe(_band_tbls[g].style.format({
+                'Avg declared income (PKR)': '{:,.0f}', 'Base tax / filer (PKR)': '{:,.0f}',
+                'Unified tax / filer (PKR)': '{:,.0f}', 'Change / filer (PKR)': '{:+,.0f}',
+                'Base ETR': '{:.2%}', 'Unified ETR': '{:.2%}', 'ETR change (pts)': '{:+.2f}',
+                'Total change (PKR M)': '{:+,.1f}', 'Filers': '{:,}'}), use_container_width=True, hide_index=True)
 
     _buf = _io.BytesIO()
     with pd.ExcelWriter(_buf, engine='openpyxl') as _xw:
         pd.DataFrame({'Item': ['Data year', 'Base regime', 'Groups', 'Surcharge included', 'Unified surcharge',
+                               'Minimum rate step (pts)', 'Top-rate cap', 'Slabs tried (incl. 0%)',
+                               'Slab limits tried (PKR)', 'Kakwani today', 'ETR gap today (pts)',
                                'Calibration S', 'Calibration NS', 'Calibration AOP', 'Option shown in detail'],
                       'Value': [selected_year, _fy_label(base_regime_year), 'Salaried, Non-Salaried, AOP', _inc_sur,
                                 f"{_u_sur_rate:.1%} above PKR {_u_sur_thr:,.0f}" if _inc_sur else 'n/a',
+                                _step * 100, f"{_cap:.1%}" if _cap_on else 'none', f"{_nslab[0]}–{_nslab[1]}",
+                                ', '.join(f'{p:,.0f}' for p in _pool), round(_K_today, 4), round(100 * _gap_today, 2),
                                 round(_factor['Salaried'], 4), round(_factor['Non-Salaried'], 4),
                                 round(_factor['AOP'], 4), _pick]}).to_excel(_xw, sheet_name='Settings', index=False)
-        for nm, (sch, _) in _results.items():
-            pd.DataFrame([{'From (PKR)': s['lower'], 'To (PKR)': s['upper'], 'Rate': s['rate']} for s in sch]
-                         ).to_excel(_xw, sheet_name=f"Schedule_{nm[0]}", index=False)
-        for nm, t in _export.items():
-            t.to_excel(_xw, sheet_name=nm, index=False)
-    st.download_button("⬇️ Download all options and tables (Excel)", _buf.getvalue(),
-                       file_name=f"Unified_schedule_{selected_year}_base{base_regime_year}.xlsx",
+        _tbl.to_excel(_xw, sheet_name='Options', index=False)
+        _etr_df.to_excel(_xw, sheet_name='ETR_points', index=False)
+        for i, (row, det) in enumerate(shown, start=1):
+            pd.DataFrame([{'From (PKR)': s['lower'], 'To (PKR)': s['upper'], 'Rate': s['rate']} for s in det['sch']]
+                         ).to_excel(_xw, sheet_name=f"Schedule_{i}", index=False)
+        for g in _UNI_GROUPS:
+            _band_tbls[g].to_excel(_xw, sheet_name=f"Detail_{'S' if g == 'Salaried' else ('NS' if g == 'Non-Salaried' else 'AOP')}", index=False)
+    st.download_button("⬇️ Download options and tables (Excel)", _buf.getvalue(),
+                       file_name=f"Unified_schedule_data{selected_year}_base{base_regime_year}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     st.stop()
 
